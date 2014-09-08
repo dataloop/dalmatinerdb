@@ -38,6 +38,7 @@
           node,
           mstore=gb_trees:empty(),
           tbl,
+		  tt,
           ct,
           dir
          }).
@@ -49,7 +50,8 @@ start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
 init([Partition]) ->
-    P = list_to_atom(integer_to_list(Partition)),
+	Ps = integer_to_list(Partition),
+    P = list_to_atom(Ps),
     CT = case application:get_env(metric_vnode, cache_points) of
              {ok, V} ->
                  V;
@@ -65,7 +67,8 @@ init([Partition]) ->
     PartitionDir = [DataDir, $/,  integer_to_list(Partition)],
     {ok, #state { partition = Partition,
                   node = node(),
-                  tbl = ets:new(P, [public, ordered_set]),
+                  tbl = ets:new(P, [public, bag]),
+                  tt = ets:new(list_to_atom(Ps ++ "_times"), [public, ordered_set]),
                   ct = CT,
                   dir = PartitionDir
                 }}.
@@ -105,14 +108,8 @@ get(Preflist, ReqID, {Bucket, Metric}, {Time, Count}) ->
 handle_command(ping, _Sender, State) ->
     {reply, {pong, State#state.partition}, State};
 
-handle_command({repair, Bucket, Metric, Time, Value}, _Sender, #state{tbl=T}=State) ->
-    State1 = case ets:lookup(T, {Bucket, Metric}) of
-                 [{{Bucket,Metric}, Start, _Time, V}] ->
-                     ets:delete(T, {Bucket,Metric}),
-                     do_write(Bucket, Metric, Start, V, State);
-                 _ ->
-                     State
-             end,
+handle_command({repair, Bucket, Metric, Time, Value}, _Sender, State) ->
+    State1 = empty_cache({Bucket, Metric}, State),
     State2 = do_put(Bucket, Metric, Time, Value, State1),
     {noreply, State2};
 
@@ -127,15 +124,8 @@ handle_command({put, Bucket, Metric, {Time, Value}}, _Sender, State) ->
     {reply, ok, State1};
 
 handle_command({get, ReqID, Bucket, Metric, {Time, Count}}, _Sender,
-               #state{partition=Partition, node=Node, tbl=T} = State) ->
-    BM = {Bucket, Metric},
-    State1 = case ets:lookup(T, BM) of
-                 [{BM, Start, _Time, V}] ->
-                     ets:delete(T, {Bucket,Metric}),
-                     do_write(Bucket, Metric, Start, V, State);
-                 _ ->
-                     State
-             end,
+               #state{partition=Partition, node=Node} = State) ->
+  State1 = empty_cache({Bucket, Metric}, State),
     {D, State2} = case get_set(Bucket, State1) of
                       {ok, {{Resolution, MSet}, S2}} ->
                           {ok, Data} = mstore:get(MSet, Metric, Time, Count),
@@ -151,12 +141,8 @@ handle_command({get, ReqID, Bucket, Metric, {Time, Count}}, _Sender,
 handle_command(_Message, _Sender, State) ->
     {noreply, State}.
 
-handle_handoff_command(?FOLD_REQ{foldfun=Fun, acc0=Acc0}, _Sender,
-                       State=#state{tbl=T}) ->
-    State1 = ets:foldl(fun({{Bucket, Metric}, Start, _, V}, SAcc) ->
-                               do_write(Bucket, Metric, Start, V, SAcc)
-                       end, State, T),
-    ets:delete_all_objects(T),
+handle_handoff_command(?FOLD_REQ{foldfun=Fun, acc0=Acc0}, _Sender, State) ->
+    State1 = empty_cache(State),
     Ts = gb_trees:to_list(State1#state.mstore),
     Acc = lists:foldl(fun({Bucket, {_, MStore}}, AccL) ->
                               F = fun(Metric, Time, V, AccIn) ->
@@ -200,8 +186,9 @@ calc_empty(I) ->
                 andalso calc_empty(I2)
     end.
 
-delete(State = #state{partition=Partition, tbl=T}) ->
+delete(State = #state{partition=Partition, tbl=T, tt = TT}) ->
     ets:delete_all_objects(T),
+    ets:delete_all_objects(TT),
     DataDir = case application:get_env(riak_core, platform_data_dir) of
                   {ok, DD} ->
                       DD;
@@ -216,11 +203,8 @@ delete(State = #state{partition=Partition, tbl=T}) ->
     {ok, State#state{mstore=gb_trees:empty()}}.
 
 handle_coverage({metrics, Bucket}, _KeySpaces, _Sender,
-                State = #state{partition=Partition, node=Node, tbl=T}) ->
-    State1 = ets:foldl(fun({{Bkt, Metric}, Start, _, V}, SAcc) ->
-                               do_write(Bkt, Metric, Start, V, SAcc)
-                       end, State, T),
-    ets:delete_all_objects(T),
+                State = #state{partition=Partition, node=Node}) ->
+    State1 = empty_cache(State),
     {Ms, State2} = case get_set(Bucket, State1) of
                        {ok, {{_, M}, S2}} ->
                            {mstore:metrics(M), S2};
@@ -231,11 +215,8 @@ handle_coverage({metrics, Bucket}, _KeySpaces, _Sender,
     {reply, Reply, State2};
 
 handle_coverage(list, _KeySpaces, _Sender,
-                State = #state{partition=Partition, node=Node, tbl=T}) ->
-    State1 = ets:foldl(fun({{Bkt, Metric}, Start, _, V}, SAcc) ->
-                               do_write(Bkt, Metric, Start, V, SAcc)
-                       end, State, T),
-    ets:delete_all_objects(T),
+                State = #state{partition=Partition, node=Node}) ->
+    State1 = empty_cache(State),
     DataDir = case application:get_env(riak_core, platform_data_dir) of
                   {ok, DD} ->
                       DD;
@@ -253,11 +234,8 @@ handle_coverage(list, _KeySpaces, _Sender,
     {reply, Reply, State1};
 
 handle_coverage({delete, Bucket}, _KeySpaces, _Sender,
-                State = #state{partition=Partition, node=Node, tbl=T, dir=Dir}) ->
-    State1 = ets:foldl(fun({{Bkt, Metric}, Start, _, V}, SAcc) ->
-                               do_write(Bkt, Metric, Start, V, SAcc)
-                       end, State, T),
-    ets:delete_all_objects(T),
+                State = #state{partition=Partition, node=Node, dir=Dir}) ->
+    State1 = empty_cache(State),
     {R, State2} = case get_set(Bucket, State1) of
                       {ok, {{_, MSet}, S1}} ->
                           mstore:delete(MSet),
@@ -279,11 +257,8 @@ handle_info(_Msg, State)  ->
 handle_exit(_PID, _Reason, State) ->
     {noreply, State}.
 
-terminate(_Reason, State=#state{tbl = T}) ->
-    State1 = ets:foldl(fun({{Bucket, Metric}, Start, _, V}, SAcc) ->
-                               do_write(Bucket, Metric, Start, V, SAcc)
-                       end, State, T),
-    ets:delete_all_objects(T),
+terminate(_Reason, State) ->
+    State1 = empty_cache(State),
     gb_trees:map(fun(_, {_, MSet}) ->
                          mstore:close(MSet)
                  end, State1#state.mstore),
@@ -304,35 +279,45 @@ new_store(Partition, Bucket) ->
     {ok, MSet} = mstore:new(PointsPerFile, BucketDir),
     {Resolution, MSet}.
 
-do_put(Bucket, Metric, Time, Value, State = #state{tbl = T, ct = CT}) ->
-    Len = mmath_bin:length(Value),
+do_put(Bucket, Metric, Time, Value, State = #state{tt = TT, tbl = T, ct = CT}) ->
     BM = {Bucket, Metric},
-    case ets:lookup(T, BM) of
-        [{BM, Start, Time, V}]
-          when (Time - Start) < CT ->
-            ets:update_element(T, BM,
-                               [{3, Time + Len},
-                                {4, <<V/binary, Value/binary>>}]),
+	case ets:lookup(TT, BM) of
+		[{_, First}]
+		  when (Time - First) < CT  ->
+			ets:insert(T, {BM, Time, Value}),
             State;
-        [{BM, Start, _Time, V}]
-          when Start == (Time + Len) ->
-            ets:update_element(T, BM,
-                               [{2, Time},
-                                {4, <<Value/binary, V/binary>>}]),
+		[] ->
+			ets:insert(TT, {BM, Time}),
+			ets:insert(T, {BM, Time, Value}),
             State;
-        [{BM, Start, Time, V}] ->
-            ets:delete(T, BM),
-            do_write(Bucket, Metric, Start, <<V/binary, Value/binary>>, State);
-        [{BM, Start, _, V}] ->
-            ets:update_element(T, BM,
-                               [{2,Time},
-                                {3, Time + Len},
-                                {4, Value}]),
-            do_write(Bucket, Metric, Start, V, State);
-        [] ->
-            ets:insert(T, {BM, Time, Time + Len, Value}),
-            State
+		_ ->
+			ets:insert(T, {BM, Time, Value}),
+			empty_cache(BM, State)
     end.
+
+empty_cache(State = #state{tt = TT}) ->
+	ets:foldl(fun({BM, _}, SAcc) ->
+					  empty_cache(BM, SAcc)
+			  end, State, TT).
+
+empty_cache({Bucket, Metric} = BM, State = #state{tbl = T, tt = TT}) ->
+	ets:delete(TT, BM),
+	L1 = lists:sort(ets:lookup(T, BM)),
+	ets:match_delete(T, {BM, '_', '_'}),
+	lists:foldl(fun({Start, Data}, SAcc) ->
+						do_write(Bucket, Metric, Start, Data, SAcc)
+				end, State, compact(L1, [])).
+
+compact([], Acc) ->
+	lists:reverse(Acc);
+
+compact([{BM, T0, V0}, {_, T1, V1} | R], Acc)
+  when T1 == (T0 + byte_size(V0) div 9) ->
+	compact([{BM, T0, <<V0/binary, V1/binary>>} | R], Acc);
+compact([{_, T, V}|R], Acc) ->
+	compact(R, [{T, V} | Acc]).
+
+
 
 do_write(Bucket, Metric, Time, Value, State) ->
     {{R, MSet}, State1} = get_or_create_set(Bucket, State),
