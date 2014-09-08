@@ -17,6 +17,7 @@
          handle_handoff_data/2,
          encode_handoff_item/2,
          handle_coverage/4,
+		 compact/1,
          handle_info/2,
          handle_exit/3]).
 
@@ -29,6 +30,7 @@
               mput/3,
               get/4,
               repair/4,
+			  compact/1,
               handle_info/2,
               repair/3
              ]).
@@ -282,8 +284,11 @@ new_store(Partition, Bucket) ->
 do_put(Bucket, Metric, Time, Value, State = #state{tt = TT, tbl = T, ct = CT}) ->
     BM = {Bucket, Metric},
 	case ets:lookup(TT, BM) of
-		[{_, First}]
-		  when (Time - First) < CT  ->
+		[{_, _First}]
+		  when Time < _First  ->
+			do_write(Bucket, Metric,Time, Value, State);
+		[{_, _First}]
+		  when (Time - _First) < CT  ->
 			ets:insert(T, {BM, Time, Value}),
             State;
 		[] ->
@@ -291,8 +296,10 @@ do_put(Bucket, Metric, Time, Value, State = #state{tt = TT, tbl = T, ct = CT}) -
 			ets:insert(T, {BM, Time, Value}),
             State;
 		_ ->
+			State1 = empty_cache(BM, State),
+			ets:insert(TT, {BM, Time}),
 			ets:insert(T, {BM, Time, Value}),
-			empty_cache(BM, State)
+			State1
     end.
 
 empty_cache(State = #state{tt = TT}) ->
@@ -302,22 +309,35 @@ empty_cache(State = #state{tt = TT}) ->
 
 empty_cache({Bucket, Metric} = BM, State = #state{tbl = T, tt = TT}) ->
 	ets:delete(TT, BM),
-	L1 = lists:sort(ets:lookup(T, BM)),
-	ets:match_delete(T, {BM, '_', '_'}),
-	lists:foldl(fun({Start, Data}, SAcc) ->
-						do_write(Bucket, Metric, Start, Data, SAcc)
-				end, State, compact(L1, [])).
+	case lists:sort(ets:lookup(T, BM)) of
+		[] ->
+			State;
+		L1 ->
+			ets:match_delete(T, {BM, '_', '_'}),
+			{Time, Data} = compact(L1),
+			do_write(Bucket, Metric, Time, Data, State)
+	end.
 
-compact([], Acc) ->
-	lists:reverse(Acc);
+compact([{_, T, V} | R]) ->
+	%%io:format(user, "compact(~p, ~p, ~p).~n", [R, T, V]),
+	compact(R, T, V).
 
-compact([{BM, T0, V0}, {_, T1, V1} | R], Acc)
-  when T1 == (T0 + byte_size(V0) div 9) ->
-	compact([{BM, T0, <<V0/binary, V1/binary>>} | R], Acc);
-compact([{_, T, V}|R], Acc) ->
-	compact(R, [{T, V} | Acc]).
+compact([], T, Acc) ->
+	{T, Acc};
 
+compact([{_, T, V} | R], T0, Acc)
+  when T == (T0 + byte_size(Acc) div 9) ->
+	compact(R, T0, <<Acc/binary, V/binary>>);
 
+compact([{_, T, V} | R], T0, Acc) 
+  when T > (T0 + byte_size(Acc) div 9) ->
+	E = mmath_bin:empty(T - (T0 + byte_size(Acc) div 9)),
+	compact(R, T0, <<Acc/binary, E/binary, V/binary>>);
+
+compact([{_, T, V} | R], T0, Acc) ->
+	E = mmath_bin:empty(T - T0),
+	V1 = <<E/binary, V/binary>>,
+	compact(R, T0, mmath_comb:merge([Acc, V1])).
 
 do_write(Bucket, Metric, Time, Value, State) ->
     {{R, MSet}, State1} = get_or_create_set(Bucket, State),
