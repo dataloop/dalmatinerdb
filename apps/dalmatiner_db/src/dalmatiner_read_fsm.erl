@@ -1,5 +1,5 @@
 %% @doc The coordinator for stat get operations.  The key here is to
-%% generate the preflist just like in wrtie_fsm and then query each
+%% generate the preflist just like in write_fsm and then query each
 %% replica and wait until a quorum is met.
 -module(dalmatiner_read_fsm).
 -behavior(gen_fsm).
@@ -136,7 +136,6 @@ execute(timeout, SD0=#state{req_id=ReqId,
                 undefined ->
                     VNode:Op(Prelist, ReqId, {Bucket, Metric});
                 _ ->
-
                     VNode:Op(Prelist, ReqId, {Bucket, Metric}, Val)
             end
     end,
@@ -220,6 +219,11 @@ terminate(_Reason, _SN, _SD) ->
 %% @pure
 %%
 %% @doc Given a list of `Replies' return the merged value.
+%% A merged value is only produced if all the resolutions in the list of
+%% replies are identical. If there is a mismatch, an error is returned.
+%% Otherwise, all data payloads from the replies are merged using
+%% mmath_comb:merge function.
+
 merge([{_, {R,_}} | _] = Replies) ->
     case [Data || {_, {_, Data}} <- Replies, is_binary(Data)] of
         [] ->
@@ -248,12 +252,15 @@ reconcile(Vals) ->
 %% @pure
 %%
 %% @doc Given the merged object `MObj' and a list of `Replies'
-%% determine if repair is needed.
+%% determine if repair is needed. After a merge has occured, the reply values
+%% from adjacent vnodes should be the same, as the merged value is propagated.
 needs_repair(MObj, Replies) ->
     Objs = [Obj || {_, Obj} <- Replies],
     lists:any(different(MObj), Objs).
 
 %% @pure
+%% Returns a unary predicate that compares two values A and B for strict
+%% inequality.
 different(A) -> fun(B) -> A =/= B end.
 
 %% @impure

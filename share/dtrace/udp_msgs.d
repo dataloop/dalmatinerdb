@@ -9,8 +9,8 @@
  */
 
 /*
- * This function gets called every time a erlang developper probe is
- * fiered, we filter for 801 and 1, so it gets executed when a handler
+ * This function gets called every time a erlang developer probe is
+ * fired, we filter for 801 and 1, so it gets executed when a handler
  * function is entered.
  */
 

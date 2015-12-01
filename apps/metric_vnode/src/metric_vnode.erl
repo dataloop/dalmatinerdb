@@ -96,6 +96,7 @@ init([Partition]) ->
                 erlang:monotonic_time(),
                 erlang:unique_integer()),
     P = list_to_atom(integer_to_list(Partition)),
+    %% Cache points refers to the number of points kept in cache in the vnode
     CT = case application:get_env(metric_vnode, cache_points) of
              {ok, V} ->
                  V;
@@ -128,13 +129,14 @@ handle_command({repair, Bucket, Metric, Time, Value}, _Sender,
     Count = mmath_bin:length(Value),
     case valid_ts(Time + Count, Bucket, State) of
         {true, State1} ->
-            State2 = 
+            State2 =
                 case ets:lookup(T, {Bucket, Metric}) of
-                    %% If we repear ona a place before the metric, well just write it!
+                    %% If we repair on a place before the metric, well just write it!
                     [{{Bucket, Metric}, Start, _Size, _Time, _Array}]
                       when Time + Count < Start ->
                         metric_io:write(State#state.io, Bucket, Metric, Time, Value),
                         State1;
+
                     %% The data is entirely behind the cache, so we flush the cache and use
                     %% the repair request as new cache
                     [{{Bucket, Metric}, Start, Size, _Time, Array}]
@@ -144,22 +146,23 @@ handle_command({repair, Bucket, Metric, Time, Value}, _Sender,
                         ets:delete(T, {Bucket,Metric}),
                         metric_io:write(State#state.io, Bucket, Metric, Start, Bin),
                         do_put(Bucket, Metric, Time, Value, State);
-                    %% Now it gets tricky teh repair is intersecting with the cache
+
+                    %% Now it gets tricky the repair is intersecting with the cache
                     %% this should never happen but it probably will, so it sucks!
                     %% There is no sane way to merge the values if they intersect,
                     %% however we know the following:
-                    %% 1) A repari request, based on how it is build, will never
+                    %% 1) A repair request, based on how it is build, will never
                     %%    contain unset values.
                     %% 2) A cache can be an entirely empty value or contain empty
                     %%    segments.
-                    %% Based on that the best aproach is to flush the cache and then
+                    %% Based on that the best approach is to flush the cache and then
                     %% also flush the repair request. So that nothing will be overwritten
                     %% with a empty value.
                     %%
-                    %% - Flusing the repair once could lead to emptyies in the cache
-                    %% overwriting non emptyies from the repair.
+                    %% - Flushing the repair once could lead to empties in the cache
+                    %% overwriting non empties from the repair.
                     %% - Flushing the cache and caching the repair could lead to new
-                    %% emplties in the new caceh from the repair now overwriting non
+                    %% empties in the new cache from the repair now overwriting non
                     %% empties from the privious cache.
                     [{{Bucket, Metric}, Start, Size, _Time, Array}] ->
                         Bin = k6_bytea:get(Array, 0, Size * ?DATA_SIZE),
@@ -168,7 +171,7 @@ handle_command({repair, Bucket, Metric, Time, Value}, _Sender,
                         metric_io:write(State#state.io, Bucket, Metric, Start, Bin),
                         metric_io:write(State#state.io, Bucket, Metric, Time, Value),
                         State1;
-                    %% If we had no privious cache we can safely cache the repair.
+                    %% If we had no previous cache we can safely cache the repair.
                     [] ->
                         do_put(Bucket, Metric, Time, Value, State)
                 end,
@@ -187,7 +190,7 @@ handle_command({mput, Data}, _Sender, State) ->
 
 handle_command({put, Bucket, Metric, {Time, Value}}, _Sender, State)
   when is_binary(Bucket), is_binary(Metric), is_integer(Time) ->
-    State1=  do_put(Bucket, Metric, Time, Value, State),
+    State1 = do_put(Bucket, Metric, Time, Value, State),
     {reply, ok, State1};
 
 handle_command({get, ReqID, Bucket, Metric, {Time, Count}}, Sender,
@@ -432,7 +435,7 @@ do_put(Bucket, Metric, Time, Value,
                     Jitter = random:uniform(CT),
                     ets:insert(T, {BM, Time, Len, Time + Jitter, Array});
                 %% If we don't have a cache but our data is too big for the
-                %% cache we happiely write it directly
+                %% cache we happily write it directly
                 [] ->
                     metric_io:write(IO, Bucket, Metric, Time, Value, Sync)
             end,

@@ -1,7 +1,7 @@
 #!/usr/sbin/dtrace -s
 /*
  * arg0 arg1 arg2 arg3 arg4  arg5 arg6   arg7 arg8
- * PID       ID   Time Size       Module Key  Opperation
+ * PID       ID   Time Size       Module Key  Operation
  *
  * PID -> Erlang process ID. (String)
  * ID -> ID of the mesurement group, 801 for cowboy handler calls.
@@ -13,8 +13,8 @@
  */
 
 /*
- * This function gets called every time a erlang developper probe is
- * fiered, we filter for 801 and 1, so it gets executed when a handler
+ * This function gets called every time a erlang developer probe is
+ * fired, we filter for 801 and 1, so it gets executed when a handler
  * function is entered.
  */
 

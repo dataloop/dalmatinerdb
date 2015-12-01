@@ -4,11 +4,13 @@
 -export([valid_type/2]).
 -endif.
 
+%% The default resolution is 1s, and a data file stores one weeks worth of points.
 -define(WEEK, 604800). %% Seconds in a week.
 
 -export([get/5, set/2, resolution/1, lifetime/1, ppf/1]).
 -ignore_xref([get/5, set/2]).
 
+%% Gets a key from Riak metadata, if it does not exist, then use the default.
 get(Prefix, SubPrefix, Key, {EnvApp, EnvKey}, Dflt) ->
     P = ensure_bin(Prefix),
     SP = ensure_bin(SubPrefix),
@@ -26,6 +28,7 @@ get(Prefix, SubPrefix, Key, {EnvApp, EnvKey}, Dflt) ->
             V
     end.
 
+%% Set the given metadata in Riak core.
 set(Ks, Val) ->
     case is_valid(Ks, Val) of
         {true, V1} ->

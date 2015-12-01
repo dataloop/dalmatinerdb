@@ -56,6 +56,7 @@ list() ->
     folsom_metrics:histogram_timed_update(
       list_buckets, metric_coverage, start, [list]).
 
+%% metric_coverage:start would be called here
 list(Bucket) ->
     folsom_metrics:histogram_timed_update(
       list_metrics, metric_coverage, start, [{metrics, Bucket}]).
