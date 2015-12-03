@@ -180,6 +180,8 @@ handle_command({repair, Bucket, Metric, Time, Value}, _Sender,
             {noreply, State1}
     end;
 
+%% Put for multiple values, uses the state as an accumulator value. `do_put`
+%% function returns a new modified state on every invocation.
 handle_command({mput, Data}, _Sender, State) ->
     State1 = lists:foldl(fun({Bucket, Metric, Time, Value}, StateAcc)
                                when is_binary(Bucket), is_binary(Metric),
@@ -196,6 +198,7 @@ handle_command({put, Bucket, Metric, {Time, Value}}, _Sender, State)
 handle_command({get, ReqID, Bucket, Metric, {Time, Count}}, Sender,
                #state{tbl=T, io=IO, partition = Idx} = State) ->
     BM = {Bucket, Metric},
+    %% tbl = T refers to the ETS table
     case ets:lookup(T, BM) of
         %% If our request is entirely cache we don't need to bother the IO node
         [{BM, Start, Size, _Time, Array}]
@@ -231,6 +234,12 @@ handle_command({get, ReqID, Bucket, Metric, {Time, Count}}, Sender,
             {noreply, State}
     end.
 
+%% ?FOLD_REQ macro is an alias for the following record structure:
+%%-record(riak_core_fold_req_v2, {
+%% foldfun :: fun(),
+%% acc0 :: term(),
+%% forwardable :: boolean(), -- it is not required to match every field
+%% opts = [] :: list()}).
 handle_handoff_command(?FOLD_REQ{foldfun=Fun, acc0=Acc0}, Sender,
                        State=#state{tbl=T, io = IO}) ->
     ets:foldl(fun({{Bucket, Metric}, Start, Size, _, Array}, _) ->
@@ -267,6 +276,7 @@ handle_handoff_data(Data, State) ->
     {{Bucket, Metric}, ValList} = binary_to_term(Data),
     true = is_binary(Bucket),
     true = is_binary(Metric),
+    %% This fulfills the same role as the mput function
     State1 = lists:foldl(fun ({T, Bin}, StateAcc) ->
                                  do_put(Bucket, Metric, T, Bin, StateAcc, 2)
                          end, State, ValList),
@@ -346,7 +356,7 @@ handle_info(vacuum, State = #state{io = IO, partition = P}) ->
     {ok, Bs} = metric_io:buckets(IO),
     State1 =
         lists:foldl(fun (Bucket, SAcc) ->
-                            case expiery(Bucket, SAcc) of
+                            case expiry(Bucket, SAcc) of
                                 {infinity, SAcc1} ->
                                     SAcc1;
                                 {Exp, SAcc1} ->
@@ -446,21 +456,23 @@ reply(Reply, {_, ReqID, _} = Sender, #state{node=N, partition=P}) ->
     riak_core_vnode:reply(Sender, {ok, ReqID, {P, N}, Reply}).
 
 valid_ts(TS, Bucket, State) ->
-    case expiery(Bucket, State) of
+    case expiry(Bucket, State) of
         %% TODO:
         %% We ignore every data where the last point is older then the
         %% lifetime this means we could still potentially write in the
-        %% past if writing baches but this is a problem for another day!
-        {Exp, State1} when is_integer(Exp),
-                         TS < Exp ->
+        %% past if writing batches but this is a problem for another day!
+        {Exp, State1} when is_integer(Exp), %% this will be false for infinity
+                         TS < Exp -> %% The timestamp of the last value
+                                     %% is too old, it precedes Exp
             {false, State1};
         {_, State1} ->
             {true, State1}
     end.
+
 %% Return the latest point we'd ever want to save. This is more strict
 %% then the expiration we do on the data but it is strong enough for
 %% our guarantee.
-expiery(Bucket, State = #state{now = Now}) ->
+expiry(Bucket, State = #state{now = Now}) ->
     case get_lifetime(Bucket, State) of
         {infinity, State1} ->
             {infinity, State1};
@@ -470,6 +482,7 @@ expiery(Bucket, State = #state{now = Now}) ->
             {Exp, State2}
     end.
 
+%% Get the resolution for this bucket, the default is 1s
 get_resolution(Bucket, State = #state{resolutions = Ress}) ->
     case btrie:find(Bucket, Ress) of
         {ok, Resolution} ->
@@ -480,12 +493,14 @@ get_resolution(Bucket, State = #state{resolutions = Ress}) ->
             {Resolution, State#state{resolutions = Ress1}}
     end.
 
+%% Get the lifetime for this bucket, if it does not exist in the btrie, then
+%% use the default lifetime of infinity.
 get_lifetime(Bucket, State = #state{lifetimes = Lifetimes}) ->
     case btrie:find(Bucket, Lifetimes) of
-        {ok, Resolution} ->
-            {Resolution, State};
+        {ok, Lifetime} ->
+            {Lifetime, State};
         error ->
-            Resolution = dalmatiner_opt:lifetime(Bucket),
-            Lifetimes1 = btrie:store(Bucket, Resolution, Lifetimes),
-            {Resolution, State#state{lifetimes = Lifetimes1}}
+            Lifetime = dalmatiner_opt:lifetime(Bucket),
+            Lifetimes1 = btrie:store(Bucket, Lifetime, Lifetimes),
+            {Lifetime, State#state{lifetimes = Lifetimes1}}
     end.
