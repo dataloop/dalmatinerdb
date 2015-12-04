@@ -51,12 +51,15 @@ write(Pid, Bucket, Metric, Time, Value) ->
 
 write(Pid, Bucket, Metric, Time, Value, MaxLen) ->
     case erlang:process_info(Pid, message_queue_len) of
+        %% if the queue is full, then write synchronously
         {message_queue_len, N} when N > MaxLen ->
             swrite(Pid, Bucket, Metric, Time, Value);
+        %% The write operation is queued, i.e. it becomes asynchronous.
         _ ->
             gen_server:cast(Pid, {write, Bucket, Metric, Time, Value})
     end.
 
+%% call will wait for the result, cast is fire and forget
 swrite(Pid, Bucket, Metric, Time, Value) ->
     gen_server:call(Pid, {write, Bucket, Metric, Time, Value}).
 

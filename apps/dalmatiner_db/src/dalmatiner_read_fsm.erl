@@ -90,7 +90,7 @@ start(VNodeInfo, Op, User, Val) ->
 %%% States
 %%%===================================================================
 
-%% Intiailize state data.
+%% Initialize state data.
 init([ReqId, {VNode, System}, Op, From]) ->
     init([ReqId, {VNode, System}, Op, From, undefined, undefined]);
 
@@ -111,17 +111,23 @@ init([ReqId, {VNode, System}, Op, From, Entity, Val]) ->
                 entity=Entity},
     {ok, prepare, SD, 0}.
 
-%% @doc Calculate the Preflist.
+%% @doc Calculate the Preflist. The preference list is the list of preferred
+%% nodes that should participate in this request.
+%% 1 - chash_key is used to determine the index in the ring that the request
+%% falls on.
+%% 2 - get_apl is uses the index to get the preferred partitions that should
+%% handle the request.
 prepare(timeout, SD0=#state{entity={B, M},
                             system=System,
                             n=N}) ->
 
-    DocIdx = riak_core_util:chash_key({B, M}),
+    DocIdx = riak_core_util:chash_key({B, M}), %% key is a tuple from riak KV days
     Prelist = riak_core_apl:get_apl(DocIdx, N, System),
     SD = SD0#state{preflist=Prelist},
     {next_state, execute, SD, 0}.
 
-%% @doc Execute the get reqs.
+%% @doc Execute the get request, sends commands to all the vnodes from the
+%% preflist and puts the coordinator into the waiting state.
 execute(timeout, SD0=#state{req_id=ReqId,
                             entity=Entity,
                             op=Op,

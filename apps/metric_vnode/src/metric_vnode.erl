@@ -234,14 +234,21 @@ handle_command({get, ReqID, Bucket, Metric, {Time, Count}}, Sender,
             {noreply, State}
     end.
 
-%% ?FOLD_REQ macro is an alias for the following record structure:
-%%-record(riak_core_fold_req_v2, {
-%% foldfun :: fun(),
-%% acc0 :: term(),
-%% forwardable :: boolean(), -- it is not required to match every field
-%% opts = [] :: list()}).
+%% Active nodes can be in three states: normal, handoff and forwarding.
+%% In the normal state, vnode commands are passed to handle_command.  When a
+%% handoff is triggered, handoff_target is set and the vnode is said to be in
+%% the handoff state.
+%% When the vnode is in the handoff state, vnode commands are passed to the
+%% handle_handoff_command function.
+%% Fold_Req is a macro for a riak_core_fold_req_v1, which contains a foldfun
+%% and an accumulator acc0 element.  The foldfun needs to be passed three
+%% arguments: the key, value and the accumulator.
 handle_handoff_command(?FOLD_REQ{foldfun=Fun, acc0=Acc0}, Sender,
                        State=#state{tbl=T, io = IO}) ->
+    %% The Accumulator is the term ok, metric_io:write is asynchronous so we
+    %% don't get a meaningful value back. The key to the ETS table is the
+    %% bucket/metric pair. The fold here occurs on the ETS table that arrives
+    %% as part of the State argument.
     ets:foldl(fun({{Bucket, Metric}, Start, Size, _, Array}, _) ->
                       Bin = k6_bytea:get(Array, 0, Size * ?DATA_SIZE),
                       k6_bytea:delete(Array),
@@ -260,35 +267,60 @@ handle_handoff_command(?FOLD_REQ{foldfun=Fun, acc0=Acc0}, Sender,
     end;
 
 %% We want to forward all the other handoff commands
+%% Once handoff has completed, the node goes into the forwarding state. The new
+%% owner may not be registered yet in the ring, or it may still be processing
+%% handoff commands.  In the forwarding state, the vnode will forward all
+%% commands to the new owner for processing.
+%% This callback is invoked when a request is received during a handoff.
 handle_handoff_command(_Message, _Sender, State) ->
-    {forward, State}.
+    {forward, State}. %% forward will attempt to fulfill the request on the
+                      %% target node but drop will drop the request making no
+                      %% such attempt.
 
+%% The VNode has the final say whether the handoff should proceed, and may
+%% postpone the handoff by returning false if the node is too busy.  The
+%% _TargetNode refers to the target for the handoff.
 handoff_starting(_TargetNode, State) ->
     {true, State}.
 
+%% The handoff manager cancels the handoff in the event that the maximum amount
+%% of concurrent handoffs exceeds a threshold. This callback may also be
+%% invoked in the case that an error occured in the handoff process.
 handoff_cancelled(State) ->
     {ok, State}.
 
+%% All the data has been transferred to the TargetNode.
 handoff_finished(_TargetNode, State) ->
     {ok, State}.
 
+%% This deserializes handoff data as it is passed to the VNode. It has to
+%% reconstruct the VNode state from the Data binaries.
+%% State is the existing State of the VNode.
 handle_handoff_data(Data, State) ->
     {{Bucket, Metric}, ValList} = binary_to_term(Data),
     true = is_binary(Bucket),
     true = is_binary(Metric),
     %% This fulfills the same role as the mput function
+    %% The State is the accumulator value and a new copy is yielded on every
+    %% iteration of the fold.
     State1 = lists:foldl(fun ({T, Bin}, StateAcc) ->
                                  do_put(Bucket, Metric, T, Bin, StateAcc, 2)
                          end, State, ValList),
     {reply, ok, State1}.
 
+%% Encodes data before it crosses the wire.
 encode_handoff_item(Key, Value) ->
     term_to_binary({Key, Value}).
 
+%% The container has determined that the vnode is out of place.  It then calls
+%% is_empty on the vnode to check if there is data to transfer.
 is_empty(State = #state{tbl = T, io=IO}) ->
     R = ets:first(T) == '$end_of_table' andalso metric_io:empty(IO),
     {R, State}.
 
+%% This is invoked by the container once it has determined that there is no
+%% more data to be transferred. This is because the data did not belong here in
+%% the first place and it is safe to delete once the data has been transferred.
 delete(State = #state{io = IO, tbl=T}) ->
     ets:delete_all_objects(T),
     ok = metric_io:delete(IO),
@@ -452,6 +484,8 @@ do_put(Bucket, Metric, Time, Value,
             State1
     end.
 
+%% The sender is a representation of the client process and is an opaque value:
+%% 3 choices to a reply: reply, noreply, stop
 reply(Reply, {_, ReqID, _} = Sender, #state{node=N, partition=P}) ->
     riak_core_vnode:reply(Sender, {ok, ReqID, {P, N}, Reply}).
 
