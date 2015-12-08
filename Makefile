@@ -21,3 +21,6 @@ rel: update
 
 package: rel
 	make -C rel/pkg package
+
+dev1 dev2 dev3 dev4: all
+	$(REBAR) as $@ release
