@@ -21,6 +21,14 @@ start()
     done
 }
 
+release() 
+{
+  ./rebar3 as dev1 release
+  ./rebar3 as dev2 release
+  ./rebar3 as dev3 release
+  ./rebar3 as dev4 release
+}
+
 cluster()
 {
     for i in _build/dev*/rel/ddb/bin; do
@@ -28,6 +36,8 @@ cluster()
         ./$i/ddb-admin cluster join dev1@127.0.0.1 
     done
 
+    echo "Wait for cluster state to converge..."
+    sleep 5
     echo "Plan changes..."
     ./_build/dev1/rel/ddb/bin/ddb-admin cluster plan
     echo "Commit changes..."
@@ -45,6 +55,9 @@ case "$1" in
         ;;
     start)
         start
+        ;;
+    release)
+        release
         ;;
     *)
         stop
