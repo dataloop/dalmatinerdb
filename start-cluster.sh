@@ -6,36 +6,27 @@
 
 stop()
 {
-    echo "Stop node 1..."
-    ./_build/dev1/rel/ddb/bin/ddb stop
-    echo "Stop node 2..."
-    ./_build/dev2/rel/ddb/bin/ddb stop
-    echo "Stop node 3..."
-    ./_build/dev3/rel/ddb/bin/ddb stop
-    echo "Stop node 4..."
-    ./_build/dev4/rel/ddb/bin/ddb stop
+    for i in _build/dev*/rel/ddb/bin; do
+        echo "$i - stop..."
+        ./$i/ddb stop
+    done
 }
 
 start()
 {
-    echo "Start node 1..."
-    ./_build/dev1/rel/ddb/bin/ddb start && sleep 2
-    echo "Start node 2..."
-    ./_build/dev2/rel/ddb/bin/ddb start && sleep 2
-    echo "Start node 3..."
-    ./_build/dev3/rel/ddb/bin/ddb start && sleep 2
-    echo "Start node 4..."
-    ./_build/dev4/rel/ddb/bin/ddb start && sleep 2
+    for i in _build/dev*/rel/ddb/bin; do
+        echo "$i - start..."
+        ./$i/ddb start 
+        sleep 2
+    done
 }
 
 cluster()
 {
-    echo "Join node 2 to node 1..."
-    ./_build/dev2/rel/ddb/bin/ddb-admin cluster join dev1@127.0.0.1
-    echo "Join node 3 to node 1..."
-    ./_build/dev3/rel/ddb/bin/ddb-admin cluster join dev1@127.0.0.1
-    echo "Join node 4 to node 1..."
-    ./_build/dev4/rel/ddb/bin/ddb-admin cluster join dev1@127.0.0.1
+    for i in _build/dev*/rel/ddb/bin; do
+        echo "$i - join cluster"
+        ./$i/ddb-admin cluster join dev1@127.0.0.1 
+    done
 
     echo "Plan changes..."
     ./_build/dev1/rel/ddb/bin/ddb-admin cluster plan
