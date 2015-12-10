@@ -10,7 +10,10 @@ all() ->
     [{group, eqc}].
 
 groups() ->
-    [{eqc, [], [prop_gb_comp]}].
+    [{eqc, [], [prop_gb_comp,
+                prop_is_empty,
+                prop_empty_after_delete,
+                prop_handoff]}].
 
 init_per_suite(Config) ->
     ok = start_cover(Config),
@@ -27,6 +30,15 @@ end_per_suite(_) ->
 
 prop_gb_comp(Config) ->
     ?P(?EQC:prop_gb_comp(), Config).
+
+prop_is_empty(Config) ->
+    ?P(?EQC:prop_is_empty(), Config).
+
+prop_empty_after_delete(Config) ->
+    ?P(?EQC:prop_empty_after_delete(), Config).
+
+prop_handoff(Config) ->
+    ?P(?EQC:prop_handoff(), Config).
 
 %%
 %% Helpers
