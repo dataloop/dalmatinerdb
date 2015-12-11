@@ -1,0 +1,15 @@
+{application, 'ddb_read_repair',
+ [{description, "An OTP application"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {mod, {'ddb_read_repair_app', []}},
+  {applications,
+   [kernel,
+    stdlib
+   ]},
+  {env, []},
+  {modules, []},
+  {contributors, []},
+  {licenses, []},
+  {links, []}
+ ]}.
