@@ -203,7 +203,14 @@ finalize(timeout, SD=#state{
                         replies=Replies,
                         entity=Entity}) ->
     MObj = merge(Replies),
-    case needs_repair(MObj, Replies) of
+    Rep = needs_repair(MObj, Replies),
+    lager:info("[read_fsm] Repair needed? ~p", [Rep]),
+    lager:info("[read_fsm] Repair Time: ~p", [Time]),
+    lager:info("[read_fsm] Repair Entity: ~p", [Entity]),
+    lager:info("[read_fsm] Repair MObj: ~p", [MObj]),
+    lager:info("[read_fsm] Repair Replies: ~p", [Replies]),
+
+    case Rep of
         true ->
             repair(Time, Entity, MObj, Replies),
             {stop, normal, SD};

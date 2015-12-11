@@ -64,7 +64,11 @@ list(Bucket, Prefix) ->
     folsom_metrics:histogram_timed_update(
       list_metrics, metric_coverage, start, [{metrics, Bucket, Prefix}]).
 
-do_put(Bucket, Metric, PPF, Time, Value, N, W) ->
+do_put(Bucket, Metric, PPF, Time, Value, _N, _W) ->
+    %% Forcing N, and W to be low values will increase the probabily that a
+    %% stale value may be read.
+    N = 1,
+    W = 1,
     DocIdx = riak_core_util:chash_key({Bucket, {Metric, Time div PPF}}),
     Preflist = riak_core_apl:get_apl(DocIdx, N, metric),
     ReqID = make_ref(),

@@ -37,7 +37,7 @@
          code_change/3]).
 
 %% the number of points to keep in the metric vnode ets cache
--define(CP, 120).
+-define(CP, 20).
 -define(HOST, "localhost").
 -define(DELAY, 2).
 -define(SERVER, ?MODULE).
@@ -122,14 +122,6 @@ handle_call({set_state, Time}, _From, State) ->
 %%     Reply = Preflist,
 %%     {reply, Reply, State};
 
-%%--------------------------------------------------------------------
-%% @doc Case 1 -
-%% - Cluster: N=2, W=1, R=1
-%% - Write: |CP| even mpoints, time=T
-%% - Cluster: N=1, W=1, R=1
-%% - Write: |CP| odd mpoints, time=T
-%% @end
-%%--------------------------------------------------------------------
 handle_call({write, NodeN, Parity}, _From, State) ->
     Reply = run(write, NodeN, Parity, State),
     {reply, Reply, State};

@@ -33,7 +33,7 @@
 %% this effects lost data on crashes.
 {mapping, "cache_points", "metric_vnode.cache_points",
  [{datatype, integer},
-  {default, 120}]}.
+  {default, 20}]}.
 
 %% @doc How long data is kept by default
 {mapping, "lifetime", "metric_vnode.lifetime",
