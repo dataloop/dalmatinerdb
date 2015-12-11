@@ -63,39 +63,6 @@ Read  (Node 1, T)
 Force remove node 4, bring node up independently
 Read (Node 4, T) must equal odd
 
-Repair replies:
-```
-{{0,'dev1@127.0.0.1'},
-{1000, <<1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,3,1,0,0,0,0,0,0,5,...>>}}
-
-{{182687704666362864775460604089535377456991567872,'dev2@127.0.0.2'},
-{1000,<<0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0...>>}}
-
-{{365375409332725729550921208179070754913983135744,'dev3@127.0.0.3'},
-{1000,<<0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0...>>}}
-
-{{548063113999088594326381812268606132370974703616,'dev4@127.0.0.4'},
-{1000,<<0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0...>>}}
-```
-
-Case 2
--------------------------------------
-Repair falls ahead of VNode cache
-
-No cluster
-Write (Node 1, T, odd)
-Write (Node 2, T, even)
-Write (Node 3, T, odd)
-Write (Node 4, T, even)
-
-Join nodes to cluster, N = 1, W = 1, R = 4
-Set T' = T + CP + 1
-Write (Node 1, T', even)
-Read  (Node 1, T')
-Force remove node 3, bring node up independently
-Read (Node 3, T) must equal odd
-Read (Node 3, T') must equal even
-
 Before read (replica replies):
 ```
 {{0,'dev1@127.0.0.1'},
@@ -125,6 +92,24 @@ After read (replica replies):
 {{548063113999088594326381812268606132370974703616,'dev4@127.0.0.4'},
 {1000, <<1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,3,1,0,0,0,0,0,0,5,...>>}}
 ```
+
+Case 2
+-------------------------------------
+Repair falls ahead of VNode cache
+
+No cluster
+Write (Node 1, T, odd)
+Write (Node 2, T, even)
+Write (Node 3, T, odd)
+Write (Node 4, T, even)
+
+Join nodes to cluster, N = 1, W = 1, R = 4
+Set T' = T + CP + 1
+Write (Node 1, T', even)
+Read  (Node 1, T')
+Force remove node 3, bring node up independently
+Read (Node 3, T) must equal odd
+Read (Node 3, T') must equal even
 
 Case 3
 -------------------------------------
