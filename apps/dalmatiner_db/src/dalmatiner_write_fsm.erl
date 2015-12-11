@@ -127,8 +127,20 @@ prepare(timeout, SD0=#state{
                        }) ->
     Bucket = list_to_binary(atom_to_list(System)),
     DocIdx = riak_core_util:chash_key({Bucket, term_to_binary(Entity)}),
+    %% Preflist = riak_core_apl:get_apl(DocIdx, N, System),
+    %% Only write to the primary vnode, emulate the scenario where the write
+    %% does not succeed at the replicas, but is nevertheless considered
+    %% successful (e.g. N=3, W >= 1).
+    PrimaryPref = riak_core_apl:get_primary_apl(DocIdx, 1, System),
     Preflist = riak_core_apl:get_apl(DocIdx, N, System),
-    SD = SD0#state{preflist=Preflist},
+    lager:info("[write fsm] Preflist Calculation System: ~p", [System]),
+    lager:info("[write fsm] Preflist Calculation Key: ~p", [{Bucket, Entity}]),
+    lager:info("[write fsm] Preflist Calculation DocIdx: ~p", [DocIdx]),
+    lager:info("[write fsm] Preflist Calculation Primary Preflist: ~p",
+               [PrimaryPref]),
+    lager:info("[write fsm] Preflist Calculation Complete Preflist: ~p",
+               [Preflist]),
+    SD = SD0#state{preflist=PrimaryPref},
     {next_state, execute, SD, 0}.
 
 %% @doc Execute the write request and then go into waiting state to

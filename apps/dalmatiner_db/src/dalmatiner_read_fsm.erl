@@ -99,11 +99,12 @@ init([ReqId, {VNode, System}, Op, From, Entity]) ->
     init([ReqId, {VNode, System}, Op, From, Entity, undefined]);
 
 init([ReqId, {VNode, System}, Op, From, Entity, Val]) ->
-    {ok, N} = application:get_env(dalmatiner_db, n),
-    {ok, R} = application:get_env(dalmatiner_db, r),
+    MaxN = 4,
+    {ok, _N} = application:get_env(dalmatiner_db, n),
+    {ok, _R} = application:get_env(dalmatiner_db, r),
     SD = #state{req_id=ReqId,
-                r=R,
-                n=N,
+                r=MaxN,
+                n=MaxN,
                 from=From,
                 op=Op,
                 val=Val,
@@ -118,7 +119,19 @@ prepare(timeout, SD0=#state{entity={B, M},
                             n=N}) ->
 
     DocIdx = riak_core_util:chash_key({B, M}),
+    %% We set an artificial ceiling/maximal value for N here, as this will
+    %% distribute the read to all nodes, even if they are not formally a
+    %% replica node.  This allows us to set a low value for N, allowing
+    %% fewer than MaxN replicas to contain the latest value.
     Prelist = riak_core_apl:get_apl(DocIdx, N, System),
+    PrimaryPref = riak_core_apl:get_primary_apl(DocIdx, 1, System),
+    lager:info("[read_fsm] Preflist Calculation System: ~p", [System]),
+    lager:info("[read fsm] Preflist Calculation Key: ~p", [{B, M}]),
+    lager:info("[read fsm] Preflist Calculation DocIdx: ~p", [DocIdx]),
+    lager:info("[read fsm] Preflist Calculation Primary Preflist: ~p",
+               [PrimaryPref]),
+    lager:info("[read fsm] Preflist Calculation Complete Preflist: ~p",
+               [Prelist]),
     SD = SD0#state{preflist=Prelist},
     {next_state, execute, SD, 0}.
 
