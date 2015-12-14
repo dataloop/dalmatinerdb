@@ -158,7 +158,7 @@ init([Partition]) ->
           hacc, %% handoff accumulator, a list of bucket,metric pairs
           lacc = [], %% local accumulator, a list of time,value pairs
           bucket, %% name of the bucket as a binstring
-          acc_fun,
+          acc_fun, %% the function supplied as part of the handoff
           last,
           max_delta = 300,
           fold_size = 82800
@@ -250,8 +250,8 @@ fold_fun(Metric, Time, V,
 
 %% This is a combining function, that is passed to the foldl in function below,
 %% the type of accumulator is opaque, and is supplied by riak_core, as part of
-%% the ?FOLD_FUN macro.
-%%
+%% the ?FOLD_FUN macro.  The function is invoked for every bucket that exists
+%% in the partition directory (managed by a VNode).
 bucket_fold_fun({BucketDir, Bucket}, {AccIn, Fun}) ->
     {ok, MStore} = mstore:open(BucketDir),
     Acc1 = #facc{hacc = AccIn,
@@ -270,17 +270,18 @@ bucket_fold_fun({BucketDir, Bucket}, {AccIn, Fun}) ->
             {Fun({Bucket, Metric}, lists:reverse(AccL), HAcc), Fun}
     end.
 
+%% Manages a partition
 handle_call({fold, Fun, Acc0}, _From,
             State = #state{partition = Partition}) ->
     DataDir = application:get_env(riak_core, platform_data_dir, "data"),
     PartitionDir = [DataDir, $/,  integer_to_list(Partition)],
     case file:list_dir(PartitionDir) of
         {ok, Buckets} ->
-            Buckets1 = [{[PartitionDir, $/, BucketS], list_to_binary(BucketS)}
-                        || BucketS <- Buckets],
             %% Buckets1 is a list of pairs, where the first item in the pair is
             %% the bucket directory, and the second item in the pair is the
             %% bucket name as a bitstring.
+            Buckets1 = [{[PartitionDir, $/, BucketS], list_to_binary(BucketS)}
+                        || BucketS <- Buckets],
             AsyncWork =
                 fun() ->
                         {Out, _} =

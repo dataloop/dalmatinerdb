@@ -103,6 +103,8 @@ init([Partition]) ->
              _ ->
                  10
          end,
+    %% There is a pool of metric workers available to complete the bulk of work
+    %% during a handoff.  
     WorkerPoolSize = case application:get_env(metric_vnode, async_workers) of
                          {ok, Val} ->
                              Val;
@@ -261,12 +263,14 @@ handle_handoff_command(?FOLD_REQ{foldfun=Fun, acc0=Acc0}, Sender,
         end,
     case metric_io:fold(IO, Fun, Acc0) of
         {ok, AsyncWork} ->
+            %% This is executed on the metric worker, see the fold operation in
+            %% the metric_worker file
             {async, {fold, AsyncWork, FinishFun}, Sender, State};
         empty ->
             {async, {fold, fun() -> Acc0 end, FinishFun}, Sender, State}
     end;
 
-%% We want to forward all the other handoff commands
+%% We wnt to forward all the other handoff commands
 %% Once handoff has completed, the node goes into the forwarding state. The new
 %% owner may not be registered yet in the ring, or it may still be processing
 %% handoff commands.  In the forwarding state, the vnode will forward all
@@ -289,6 +293,7 @@ handoff_starting(_TargetNode, State) ->
 handoff_cancelled(State) ->
     {ok, State}.
 
+%% The node has finished handoff and forwarding state, 
 %% All the data has been transferred to the TargetNode.
 handoff_finished(_TargetNode, State) ->
     {ok, State}.
