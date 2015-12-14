@@ -2,7 +2,7 @@ REBAR = $(shell pwd)/rebar3
 
 .PHONY: rel package version all tree
 
-all: cp-hooks compile update
+all: compile update
 
 update:
 	$(REBAR) update
