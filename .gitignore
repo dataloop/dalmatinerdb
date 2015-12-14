@@ -11,6 +11,7 @@ deps
 dev
 doc
 ebin
+log
 erl_crash.dump
 dalmatinerdb.xml
 dalmatinerdb_template.xml

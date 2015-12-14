@@ -21,7 +21,7 @@ init_worker(VNodeIndex, _Args, _Props) ->
 handle_work({fold, FoldFun, FinishFun}, _Sender, State) ->
     try
         %% Try and add some kind of tracing ot the output of the foldFun here
-        %% Print self() to get the process id of the current worker.  THis is
+        %% Print self() to get the process id of the current worker.  This is
         %% useful to associate the values of the FoldFun, to associate what
         %% happens with the particular worker.
         FinishFun(FoldFun())

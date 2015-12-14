@@ -155,7 +155,7 @@ init([Partition]) ->
         {
           metric,
           size = 0,
-          hacc, %% handoff accumulator, a list of bucket,metric pairs
+          hacc, %% handoff accumulator
           lacc = [], %% local accumulator, a list of time,value pairs
           bucket, %% name of the bucket as a binstring
           acc_fun, %% the function supplied as part of the handoff
@@ -254,6 +254,8 @@ fold_fun(Metric, Time, V,
 %% in the partition directory (managed by a VNode).
 bucket_fold_fun({BucketDir, Bucket}, {AccIn, Fun}) ->
     {ok, MStore} = mstore:open(BucketDir),
+    %% hacc is the handoff accumulator, see here:
+    %% https://github.com/basho/riak_core/blob/develop/src/riak_core_handoff_sender.erl#L166
     Acc1 = #facc{hacc = AccIn,
                  bucket = Bucket,
                  acc_fun = Fun},
