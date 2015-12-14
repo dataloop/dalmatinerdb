@@ -155,16 +155,17 @@ init([Partition]) ->
         {
           metric,
           size = 0,
-          hacc,
-          lacc = [],
-          bucket,
+          hacc, %% handoff accumulator, a list of bucket,metric pairs
+          lacc = [], %% local accumulator, a list of time,value pairs
+          bucket, %% name of the bucket as a binstring
           acc_fun,
           last,
           max_delta = 300,
           fold_size = 82800
         }).
 
-
+%% The metric name from the accumulator is not the same as the current metric
+%% name, and the local accumulator is empty.
 fold_fun(Metric, Time, V,
          Acc =
              #facc{metric = Metric2,
@@ -176,6 +177,8 @@ fold_fun(Metric, Time, V,
       last = Time + Size,
       size = Size,
       lacc = [{Time, V}]};
+
+%% The metric names are not the same
 fold_fun(Metric, Time, V,
          Acc =
              #facc{metric = Metric2,
@@ -187,12 +190,13 @@ fold_fun(Metric, Time, V,
     Size = mmath_bin:length(V),
     AccOut = Fun({Bucket, Metric2}, lists:reverse(AccL), AccIn),
     Acc#facc{
-      metric = Metric,
+      metric = Metric, %% store the name of the last seen metric in the acc
       last = Time + Size,
       size = Size,
       hacc = AccOut,
       lacc = [{Time, V}]};
 
+%% The metric names are the same
 fold_fun(Metric, Time, V,
          Acc =
              #facc{metric = Metric,
@@ -211,6 +215,10 @@ fold_fun(Metric, Time, V,
       last = Time + Size,
       lacc = [{Time, V}]};
 
+
+%% The metric names are the same, and some combining operation occurs
+%% AccL is a list of pairs, of {Time, Value}
+%%
 fold_fun(Metric, Time, V,
          Acc =
              #facc{metric = Metric,
@@ -240,6 +248,10 @@ fold_fun(Metric, Time, V,
               lacc = [{Time, V}, {T0, AccE} | AccL]}
     end.
 
+%% This is a combining function, that is passed to the foldl in function below,
+%% the type of accumulator is opaque, and is supplied by riak_core, as part of
+%% the ?FOLD_FUN macro.
+%%
 bucket_fold_fun({BucketDir, Bucket}, {AccIn, Fun}) ->
     {ok, MStore} = mstore:open(BucketDir),
     Acc1 = #facc{hacc = AccIn,
@@ -248,8 +260,11 @@ bucket_fold_fun({BucketDir, Bucket}, {AccIn, Fun}) ->
     AccOut = mstore:fold(MStore, fun fold_fun/4, Acc1),
     mstore:close(MStore),
     case AccOut of
+        %% Return the original accumulator value unchanged
         #facc{lacc=[], hacc=HAcc} ->
             {HAcc, Fun};
+        %% Return the handoff data as an aggregation of:
+        %% {{Bucket, Metric}, [Values]}
         #facc{bucket = Bucket, metric = Metric,
               lacc=AccL, hacc=HAcc}->
             {Fun({Bucket, Metric}, lists:reverse(AccL), HAcc), Fun}
@@ -263,6 +278,9 @@ handle_call({fold, Fun, Acc0}, _From,
         {ok, Buckets} ->
             Buckets1 = [{[PartitionDir, $/, BucketS], list_to_binary(BucketS)}
                         || BucketS <- Buckets],
+            %% Buckets1 is a list of pairs, where the first item in the pair is
+            %% the bucket directory, and the second item in the pair is the
+            %% bucket name as a bitstring.
             AsyncWork =
                 fun() ->
                         {Out, _} =
