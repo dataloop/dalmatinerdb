@@ -156,12 +156,13 @@ init([Partition]) ->
           metric,
           size = 0,
           hacc, %% handoff accumulator
-          lacc = [], %% local accumulator, a list of time,value pairs
+          lacc = [], %% local accumulator, a {bucket, metric} key, together
+                     %% with a list of {time,value} pairs
           bucket, %% name of the bucket as a binstring
           acc_fun, %% the function supplied as part of the handoff
           last,
-          max_delta = 300,
-          fold_size = 82800
+          max_delta = 300, %% 5 minute window?
+          fold_size = 82800 %% why is it initialized to this value?
         }).
 
 %% The metric name from the accumulator is not the same as the current metric
@@ -170,15 +171,20 @@ fold_fun(Metric, Time, V,
          Acc =
              #facc{metric = Metric2,
                    lacc = []}) when
-      Metric =/= Metric2 ->
+      Metric =/= Metric2 -> %% When lacc is empty, and the metric name does not
+                            %% match the name that we have on our accumulator,
+                            %% initialize lacc to the first time and value 
+                            %% for this metric.
+    %% The size of the integer value with it's type
     Size = mmath_bin:length(V),
     Acc#facc{
       metric = Metric,
-      last = Time + Size,
+      last = Time + Size, %% The byte offset of data so far
       size = Size,
       lacc = [{Time, V}]};
 
-%% The metric names are not the same
+%% The metric names are not the same, but there is an existing lacc value
+%% Emit Value: Metric names differ
 fold_fun(Metric, Time, V,
          Acc =
              #facc{metric = Metric2,
@@ -188,6 +194,9 @@ fold_fun(Metric, Time, V,
                    hacc = AccIn}) when
       Metric =/= Metric2 ->
     Size = mmath_bin:length(V),
+    %% When we have seen a new metric, use the supplied Fun/3 from Riak to
+    %% output a value for this metric. This will be our new hacc value.  Reinit
+    %% the lacc to the {Time,V} pair for this new metric.
     AccOut = Fun({Bucket, Metric2}, lists:reverse(AccL), AccIn),
     Acc#facc{
       metric = Metric, %% store the name of the last seen metric in the acc
@@ -196,7 +205,7 @@ fold_fun(Metric, Time, V,
       hacc = AccOut,
       lacc = [{Time, V}]};
 
-%% The metric names are the same
+%% The metric names are the same, emit value: Size > ChunkSize
 fold_fun(Metric, Time, V,
          Acc =
              #facc{metric = Metric,
@@ -206,7 +215,8 @@ fold_fun(Metric, Time, V,
                    acc_fun = Fun,
                    hacc = AccIn,
                    fold_size = _FoldSize}) when
-      _Size > _FoldSize ->
+      _Size > _FoldSize -> %% When the size is greater than 10Mb, emit a new
+                           %% handoff chunk
     AccOut = Fun({Bucket, Metric}, lists:reverse(AccL), AccIn),
     Size = mmath_bin:length(V),
     Acc#facc{
@@ -216,9 +226,9 @@ fold_fun(Metric, Time, V,
       lacc = [{Time, V}]};
 
 
-%% The metric names are the same, and some combining operation occurs
-%% AccL is a list of pairs, of {Time, Value}
-%%
+%% The metric names are the same, there is an existing acc and the size of the
+%% current lacc (list of {Time, Value} pairs) does not exceed the Handoff chunk
+%% size (~10Mb).
 fold_fun(Metric, Time, V,
          Acc =
              #facc{metric = Metric,
@@ -230,6 +240,9 @@ fold_fun(Metric, Time, V,
     case Time - Last of
         Delta when Delta > 0,
         Delta =< MaxDelta ->
+            %% Since the last value lies so close to this one, combine them
+            %% together in this `strange` format, by recording multiple values
+            %% for the same time value with the delta being stored inbetween.
             AccV = <<AccE/binary, (mmath_bin:empty(Delta))/binary, V/binary>>,
             Acc#facc{
               size = Size + Delta + ThisSize,
@@ -245,7 +258,7 @@ fold_fun(Metric, Time, V,
             Acc#facc{
               size = Size + ThisSize,
               last = Time + ThisSize,
-              lacc = [{Time, V}, {T0, AccE} | AccL]}
+              lacc = [{Time, V}, {T0, AccE} | AccL]} %% Prepend {T,V} to lacc
     end.
 
 %% This is a combining function, that is passed to the foldl in function below,
@@ -258,7 +271,9 @@ bucket_fold_fun({BucketDir, Bucket}, {AccIn, Fun}) ->
     %% https://github.com/basho/riak_core/blob/develop/src/riak_core_handoff_sender.erl#L166
     Acc1 = #facc{hacc = AccIn,
                  bucket = Bucket,
-                 acc_fun = Fun},
+                 acc_fun = Fun}, %% Fun/3 is visit fun func supplied by Riak
+    %% For each bucket, the fold operation on the mstore occurs, for all of
+    %% it's metrics. lacc will contain a list of {Time, Value} pairs.
     AccOut = mstore:fold(MStore, fun fold_fun/4, Acc1),
     mstore:close(MStore),
     case AccOut of
@@ -269,6 +284,9 @@ bucket_fold_fun({BucketDir, Bucket}, {AccIn, Fun}) ->
         %% {{Bucket, Metric}, [Values]}
         #facc{bucket = Bucket, metric = Metric,
               lacc=AccL, hacc=HAcc}->
+            %% Now invoke the function/3 that is defined in the
+            %% riak_handoff_sender.  This "mops" up the remaing data in the
+            %% accumulator.
             {Fun({Bucket, Metric}, lists:reverse(AccL), HAcc), Fun}
     end.
 
