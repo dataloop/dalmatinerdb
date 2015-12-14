@@ -78,11 +78,11 @@ Case 1
 --------------------------------------
 Repair to non-existent VNode cache
 
-Join nodes to cluster, N = 1, W = 1, R = 4
-Write (Node 1, T, odd)
-Read  (Node 1, T)
-Force remove node 4, bring node up independently
-Read (Node 4, T) must equal odd
+1. Join nodes to cluster, N = 1, W = 1, R = 4
+2. Write (Node 1, T, odd)
+3. Read  (Node 1, T)
+4. Force remove node 4, bring node up independently
+5. Read (Node 4, T) must equal odd
 
 Before read (replica replies):
 ```
@@ -118,11 +118,11 @@ Case 2
 -------------------------------------
 Repair falls ahead of VNode cache
 
-No cluster
-Write (Node 1, T, odd)
-Write (Node 2, T, even)
-Write (Node 3, T, odd)
-Write (Node 4, T, even)
+1. No cluster
+2. Write (Node 1, T, odd)
+3. Write (Node 2, T, even)
+4. Write (Node 3, T, odd)
+5. Write (Node 4, T, even)
 
 Join nodes to cluster, N = 1, W = 1, R = 4
 Set T' = T + CP + 1
@@ -166,11 +166,11 @@ Case 3
 -------------------------------------
 Repair falls behind the VNode cache
 
-No cluster
-Write (Node 1, T, odd)
-Write (Node 2, T, even)
-Write (Node 3, T, odd)
-Write (Node 4, T, even)
+1. No cluster
+2. Write (Node 1, T, odd)
+3. Write (Node 2, T, even)
+4. Write (Node 3, T, odd)
+5. Write (Node 4, T, even)
 
 Join nodes to cluster, N = 1, W = 1, R = 4
 Set T' = T - CP - 1
@@ -215,11 +215,11 @@ Case 4
 -------------------------------------
 Repair overlaps the cache
 
-No cluster
-Write (Node 1, T, odd)
-Write (Node 2, T, even)
-Write (Node 3, T, odd)
-Write (Node 4, T, even)
+1. No cluster
+2. Write (Node 1, T, odd)
+3. Write (Node 2, T, even)
+4. Write (Node 3, T, odd)
+5. Write (Node 4, T, even)
 
 Join nodes to cluster, N = 1, W = 1, R = 4
 Write (Node 1, T, even)
