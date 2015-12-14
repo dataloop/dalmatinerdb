@@ -79,7 +79,7 @@ Case 1
 Repair to non-existent VNode cache
 
 1. Join nodes to cluster, N = 1, W = 1, R = 4
-2. Write (Node 1, T, odd)
+2. Write (Node 1, Time = T, odd)
 3. Read  (Node 1, T)
 4. Force remove node 4, bring node up independently
 5. Read (Node 4, T) must equal odd
@@ -125,12 +125,12 @@ Repair falls ahead of VNode cache
 5. Write (Node 4, T, even)
 
 Join nodes to cluster, N = 1, W = 1, R = 4
-Set T' = T + CP + 1
-Write (Node 1, T', even)
-Read  (Node 1, T')
-Force remove node 3, bring node up independently
-Read (Node 3, T) must equal odd
-Read (Node 3, T') must equal even
+1. Set Time T' = T + CP + 1
+2. Write (Node 1, T', even)
+3. Read  (Node 1, T')
+4. Force remove node 3, bring node up independently
+5. Read (Node 3, T) must equal odd
+6. Read (Node 3, T') must equal even
 
 Before read (replica replies):
 ```
@@ -173,12 +173,12 @@ Repair falls behind the VNode cache
 5. Write (Node 4, T, even)
 
 Join nodes to cluster, N = 1, W = 1, R = 4
-Set T' = T - CP - 1
-Write (Node 1, T', even)
-Read  (Node 1, T')
-Force remove node 3, bring node up independently
-Read (Node 3, T) must equal odd
-Read (Node 3, T') must equal even
+1. Set T' = T - CP - 1
+2. Write (Node 1, T', even)
+3. Read  (Node 1, T')
+4. Force remove node 3, bring node up independently
+5. Read (Node 3, T) must equal odd
+6. Read (Node 3, T') must equal even
 
 
 Before read (replica replies):
@@ -222,7 +222,7 @@ Repair overlaps the cache
 5. Write (Node 4, T, even)
 
 Join nodes to cluster, N = 1, W = 1, R = 4
-Write (Node 1, T, even)
-Read  (Node 1, T)
-Force remove node 3, bring node up independently
-Read (Node 3, T) must equal continuous, fully interleaved sequence
+1. Write (Node 1, T, even)
+2. Read  (Node 1, T)
+3. Force remove node 3, bring node up independently
+4. Read (Node 3, T) must equal continuous, fully interleaved sequence
