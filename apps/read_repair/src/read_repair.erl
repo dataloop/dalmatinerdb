@@ -206,7 +206,7 @@ gen_canonical() ->
     lists:seq(1, ?CP).
 
 gen_even() ->
-    lists:filter(fun(X) -> X rem 2 =:= 0 end, gen_canonical()).
+    [0,2,0,4,0,6,0,8,0,10,0,12,0,14,0,16,0,18,0,20].
 
 gen_odd() ->
-    lists:filter(fun(X) -> X rem 2 =/= 0 end, gen_canonical()).
+    [1,0,3,0,5,0,7,0,9,0,11,0,13,0,15,0,17,0,19,0].

@@ -7,7 +7,7 @@ detected and replaced by a newer value on those replicas.
 
 The quorum condition, r + w > n, allows the system to tolerate unavailable
 nodes. The book "Designing Data Intensive Applications" by Martin Kleppmann
-(O'Reilly) lists the following situations in which stale values may be returned:
+(O'Reilly, 2015) lists the following situations in which stale values may be returned:
 
 * When a write occurs concurrently with a read, it cannot be determined
   whether the old or new value will be returned in the read.
@@ -32,20 +32,41 @@ nodes. The book "Designing Data Intensive Applications" by Martin Kleppmann
 Forcing Read Repair
 ------------------
 
-In a cluster of N nodes, N and W may both be set to low values, while R can be
-set to a high value, even N itself.  This forces requests to be performed
-against all nodes, causing stale/non-existent values to be read.
 
 Finally, Basho notes that read repair may be forced by increasing the n_val,
 together with an increasing R value, may cause the failed read operations.
 [https://docs.basho.com/riak/1.3.1/references/appendices/concepts/Replication]
 
-Test Cases
-==========
+Test Methodology
+================
 
-The test data is purposefully simple in order to easily verify correctness.
-Assume Node 1 is Claimant C, and the key for the test metric always hashes to 
-a VNode partition residing on Node 1.
+For repeatability purposes, it is ideal to use an automated approach.  Various
+frameworks were looked at, such as:
+- PropEr
+  (http://proper.softlab.ntua.gr/Tutorials/PropEr_testing_of_finite_state_machines.html)
+- Riak_test
+  (https://github.com/basho/riak_test)
+
+However, the most suitable enhancement would be to use ideas from RedBull Media House's
+Eventuate Chaos (https://github.com/RBMHTechnology/eventuate-chaos). This tests
+Eventuate (distributed application framework) using a set of Docker containers and a
+utility called Blockade (https://github.com/kongo2002/blockade). This allows
+for testing network partitions and failures in a more realistic way than the
+brute force and manual approach taken below.
+
+In the interests of time, a first pass approach was to use adjust the
+consistency parameters as follows:
+
+For a cluster of N nodes, N and W may both be set to low values, while R can be
+set to a high value, even N itself.  This forces requests to be performed
+against all nodes, causing stale/non-existent values to be read.
+
+The utility `dev-cluster` script allows a local-node cluster to be stopped and
+started, while data may be inserted with the `read_repair` test application.
+The test data used is purposefully simple in order to easily verify correctness.
+
+Assumptions: Assume Node 1 is Claimant C, and the key for the test metric always
+hashes to a VNode partition residing on Node 1.
 Assume the force remove operation involves no handoffs.
 
 3 time series are available, all of size |Cache Points (CP)|
@@ -66,7 +87,7 @@ Read (Node 4, T) must equal odd
 Before read (replica replies):
 ```
 {{0,'dev1@127.0.0.1'},
-{1000, <<1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,3,1,0,0,0,0,0,0,5,...>>}}
+{1000, <<1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,3,...,1,0,0,0,0,0,0,19>>}}
 
 {{182687704666362864775460604089535377456991567872,'dev2@127.0.0.2'},
 {1000,<<0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0...>>}}
@@ -81,16 +102,16 @@ Before read (replica replies):
 After read (replica replies):
 ```
 {{0,'dev1@127.0.0.1'},
-{1000, <<1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,3,1,0,0,0,0,0,0,5,...>>}}
+{1000, <<1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,3,...,1,0,0,0,0,0,0,19>>}}
 
 {{182687704666362864775460604089535377456991567872,'dev2@127.0.0.2'},
-{1000, <<1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,3,1,0,0,0,0,0,0,5,...>>}}
+{1000, <<1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,3,...,1,0,0,0,0,0,0,19>>}}
 
 {{365375409332725729550921208179070754913983135744,'dev3@127.0.0.3'},
-{1000, <<1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,3,1,0,0,0,0,0,0,5,...>>}}
+{1000, <<1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,3,...,1,0,0,0,0,0,0,19>>}}
 
 {{548063113999088594326381812268606132370974703616,'dev4@127.0.0.4'},
-{1000, <<1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,3,1,0,0,0,0,0,0,5,...>>}}
+{1000, <<1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,3,...,1,0,0,0,0,0,0,19>>}}
 ```
 
 Case 2
@@ -111,6 +132,36 @@ Force remove node 3, bring node up independently
 Read (Node 3, T) must equal odd
 Read (Node 3, T') must equal even
 
+Before read (replica replies):
+```
+{{0,'dev1@127.0.0.1'},
+{1000, <<1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,2,1,0,0,0,0,0,0,0,...,1,0,0,0,0,0,0,20>>}}
+
+{{182687704666362864775460604089535377456991567872,'dev2@127.0.0.2'},
+{1000,<<0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0...>>}}
+
+{{365375409332725729550921208179070754913983135744,'dev3@127.0.0.3'},
+{1000,<<0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0...>>}}
+
+{{548063113999088594326381812268606132370974703616,'dev4@127.0.0.4'},
+{1000,<<0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0...>>}}
+```
+
+After read (replica replies):
+```
+{{0,'dev1@127.0.0.1'},
+{1000, <<1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,2,1,0,0,0,0,0,0,0,...,1,0,0,0,0,0,0,20>>}}
+
+{{182687704666362864775460604089535377456991567872,'dev2@127.0.0.2'},
+{1000, <<1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,2,1,0,0,0,0,0,0,0,...,1,0,0,0,0,0,0,20>>}}
+
+{{365375409332725729550921208179070754913983135744,'dev3@127.0.0.3'},
+{1000, <<1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,2,1,0,0,0,0,0,0,0,...,1,0,0,0,0,0,0,20>>}}
+
+{{548063113999088594326381812268606132370974703616,'dev4@127.0.0.4'},
+{1000, <<1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,2,1,0,0,0,0,0,0,0,...,1,0,0,0,0,0,0,20>>}}
+```
+
 Case 3
 -------------------------------------
 Repair falls behind the VNode cache
@@ -128,6 +179,7 @@ Read  (Node 1, T')
 Force remove node 3, bring node up independently
 Read (Node 3, T) must equal odd
 Read (Node 3, T') must equal even
+
 
 Case 4
 -------------------------------------
