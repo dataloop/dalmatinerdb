@@ -242,8 +242,8 @@ handle_command({get, ReqID, Bucket, Metric, {Time, Count}}, Sender,
 %% the handoff state.
 %% When the vnode is in the handoff state, vnode commands are passed to the
 %% handle_handoff_command function.
-%% Fold_Req is a macro for a riak_core_fold_req_v1, which contains a foldfun
-%% and an accumulator acc0 element.  The foldfun needs to be passed three
+%% Fold_Req is a macro for a riak_core_fold_req_v1, which contains a
+%% visit_fun and an accumulator acc0 element.  The foldfun needs to be passed three
 %% arguments: the key, value and the accumulator.
 handle_handoff_command(?FOLD_REQ{foldfun=Fun, acc0=Acc0}, Sender,
                        State=#state{tbl=T, io = IO}) ->
@@ -270,7 +270,7 @@ handle_handoff_command(?FOLD_REQ{foldfun=Fun, acc0=Acc0}, Sender,
             {async, {fold, fun() -> Acc0 end, FinishFun}, Sender, State}
     end;
 
-%% We wnt to forward all the other handoff commands
+%% We want to forward all the other handoff commands
 %% Once handoff has completed, the node goes into the forwarding state. The new
 %% owner may not be registered yet in the ring, or it may still be processing
 %% handoff commands.  In the forwarding state, the vnode will forward all
@@ -314,6 +314,10 @@ handle_handoff_data(Data, State) ->
     {reply, ok, State1}.
 
 %% Encodes data before it crosses the wire.
+%% Key is {Bucket, Metric}, Value is a sequence of {Time, Value} pairs.  This
+%% function is called by the VisitFun/3, that is passed to the
+%% handle_handoff_command by riak core. After the data is serialized to binary,
+%% it is sent by VisitFun to the target VNode.
 encode_handoff_item(Key, Value) ->
     term_to_binary({Key, Value}).
 
