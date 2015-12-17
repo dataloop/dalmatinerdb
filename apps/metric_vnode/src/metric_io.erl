@@ -161,6 +161,9 @@ init([Partition]) ->
           fold_size = 82800
         }).
 
+chunk_ready(Fun, HO_Acc, FAcc, Key, Val) ->
+    _Copy = FAcc,
+    Fun(Key, Val, HO_Acc).
 
 fold_fun(Metric, Time, V,
          Acc =
@@ -182,7 +185,9 @@ fold_fun(Metric, Time, V,
                    hacc = AccIn}) when
       Metric =/= Metric2 ->
     Size = mmath_bin:length(V),
-    AccOut = Fun({Bucket, Metric2}, lists:reverse(AccL), AccIn),
+    %% AccOut = Fun({Bucket, Metric2}, lists:reverse(AccL), AccIn),
+    AccOut = chunk_ready(Fun, AccIn, Acc, {Bucket, Metric2},
+                         lists:reverse(AccL)),
     Acc#facc{
       metric = Metric,
       last = Time + Size,
@@ -200,7 +205,10 @@ fold_fun(Metric, Time, V,
                    hacc = AccIn,
                    fold_size = _FoldSize}) when
       _Size > _FoldSize ->
-    AccOut = Fun({Bucket, Metric}, lists:reverse(AccL), AccIn),
+
+    AccOut = chunk_ready(Fun, AccIn, Acc, {Bucket, Metric},
+                         lists:reverse(AccL)),
+    %% AccOut = Fun({Bucket, Metric}, lists:reverse(AccL), AccIn),
     Size = mmath_bin:length(V),
     Acc#facc{
       size = Size,
@@ -249,10 +257,12 @@ bucket_fold_fun({BucketDir, Bucket}, {AccIn, Fun}) ->
             {HAcc, Fun};
         #facc{bucket = Bucket, metric = Metric,
               lacc=AccL, hacc=HAcc}->
-            {Fun({Bucket, Metric}, lists:reverse(AccL), HAcc), Fun}
+            AccOut = chunk_ready(Fun, AccIn, HAcc, {Bucket, Metric},
+                                 lists:reverse(AccL)),
+            {AccOut, Fun}
     end.
 
-fold_byckets_fun(PartitionDir, Buckets, Fun, Acc0) ->
+fold_buckets_fun(PartitionDir, Buckets, Fun, Acc0) ->
     Buckets1 = [{[PartitionDir, $/, BucketS], list_to_binary(BucketS)}
                 || BucketS <- Buckets],
     fun() ->
@@ -267,7 +277,7 @@ handle_call({fold, Fun, Acc0}, _From,
     PartitionDir = [DataDir, $/,  integer_to_list(Partition)],
     case file:list_dir(PartitionDir) of
         {ok, Buckets} ->
-            AsyncWork = fold_byckets_fun(PartitionDir, Buckets, Fun, Acc0),
+            AsyncWork = fold_buckets_fun(PartitionDir, Buckets, Fun, Acc0),
             {reply, {ok, AsyncWork}, State};
         _ ->
             {reply, empty, State}

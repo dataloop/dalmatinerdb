@@ -99,12 +99,14 @@ init([ReqId, {VNode, System}, Op, From, Entity]) ->
     init([ReqId, {VNode, System}, Op, From, Entity, undefined]);
 
 init([ReqId, {VNode, System}, Op, From, Entity, Val]) ->
-    MaxN = 4,
-    {ok, _N} = application:get_env(dalmatiner_db, n),
-    {ok, _R} = application:get_env(dalmatiner_db, r),
+    %% MaxN = 4,
+    {ok, N} = application:get_env(dalmatiner_db, n),
+    {ok, R} = application:get_env(dalmatiner_db, r),
     SD = #state{req_id=ReqId,
-                r=MaxN,
-                n=MaxN,
+                %% r=MaxN,
+                %% n=MaxN,
+                r = R,
+                n = N,
                 from=From,
                 op=Op,
                 val=Val,
@@ -123,7 +125,7 @@ prepare(timeout, SD0=#state{entity={B, M},
     %% distribute the read to all nodes, even if they are not formally a
     %% replica node.  This allows us to set a low value for N, allowing
     %% fewer than MaxN replicas to contain the latest value.
-    Prelist = riak_core_apl:get_apl(DocIdx, N, System),
+    Preflist = riak_core_apl:get_apl(DocIdx, N, System),
     PrimaryPref = riak_core_apl:get_primary_apl(DocIdx, 1, System),
     lager:info("[read_fsm] Preflist Calculation System: ~p", [System]),
     lager:info("[read fsm] Preflist Calculation Key: ~p", [{B, M}]),
@@ -131,8 +133,8 @@ prepare(timeout, SD0=#state{entity={B, M},
     lager:info("[read fsm] Preflist Calculation Primary Preflist: ~p",
                [PrimaryPref]),
     lager:info("[read fsm] Preflist Calculation Complete Preflist: ~p",
-               [Prelist]),
-    SD = SD0#state{preflist=Prelist},
+               [Preflist]),
+    SD = SD0#state{preflist=Preflist},
     {next_state, execute, SD, 0}.
 
 %% @doc Execute the get reqs.
@@ -140,17 +142,17 @@ execute(timeout, SD0=#state{req_id=ReqId,
                             entity=Entity,
                             op=Op,
                             val=Val,
-                            preflist=Prelist}) ->
+                            preflist=Preflist}) ->
     case Entity of
         undefined ->
-            metric_vnode:Op(Prelist, ReqId);
+            metric_vnode:Op(Preflist, ReqId);
         {Bucket, {Metric, _}} ->
             case Val of
                 undefined ->
-                    metric_vnode:Op(Prelist, ReqId, {Bucket, Metric});
+                    metric_vnode:Op(Preflist, ReqId, {Bucket, Metric});
                 _ ->
 
-                    metric_vnode:Op(Prelist, ReqId, {Bucket, Metric}, Val)
+                    metric_vnode:Op(Preflist, ReqId, {Bucket, Metric}, Val)
             end
     end,
     {next_state, waiting, SD0}.

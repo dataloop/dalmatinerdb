@@ -110,7 +110,7 @@ handle_call(get_state, _From, State) ->
 handle_call({set_state, Time}, _From, State) ->
     State1 = State#state{sentinelTime = Time},
     Reply = State1,
-    {reply, Reply, State1};
+    {reply, Reply, State};
 
 %%--------------------------------------------------------------------
 %% @doc Gets the preflist for the Key = {B, M} -used for inspection purposes.
