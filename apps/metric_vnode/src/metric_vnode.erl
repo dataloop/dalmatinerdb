@@ -22,30 +22,37 @@
          handle_info/2,
          handle_exit/3]).
 
--export([mput/3, put/5, get/4]).
+-export([mput/3, put/5, get/4, get_index/3, update_index/4]).
 
 -ignore_xref([
               start_vnode/1,
               put/5,
               mput/3,
               get/4,
+              update_index/4,
               repair/4,
+              repair_index/3,
               handle_info/2,
               repair/3
              ]).
 
 -record(state, {
           partition,
+          n,
+          w,
           node,
           tbl,
           ct,
           io,
+          index,
+          now,
           resolutions = btrie:new(),
           lifetimes  = btrie:new()
          }).
 
 -define(MASTER, metric_vnode_master).
 -define(MAX_Q_LEN, 20).
+-define(TICK, 1000).
 -define(VAC, 1000*60*60*2).
 
 %% API
@@ -53,12 +60,10 @@ start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
 repair(IdxNode, {Bucket, Metric}, {Time, Obj}) ->
-    riak_core_vnode_master:command(
-      IdxNode,
-      {repair, Bucket, Metric, Time, Obj},
-      ignore,
-      ?MASTER).
-
+    riak_core_vnode_master:command(IdxNode,
+                                   {repair, Bucket, Metric, Time, Obj},
+                                   ignore,
+                                   ?MASTER).
 
 put(Preflist, ReqID, Bucket, Metric, {Time, Values}) when is_list(Values) ->
     put(Preflist, ReqID, Bucket, Metric,
@@ -86,14 +91,35 @@ get(Preflist, ReqID, {Bucket, Metric}, {Time, Count}) ->
                                    {fsm, undefined, self()},
                                    ?MASTER).
 
+get_index(Preflist, ReqID, Bucket) ->
+    riak_core_vnode_master:command(Preflist,
+                                   {get_index, ReqID, Bucket},
+                                   {fsm, undefined, self()},
+                                   ?MASTER).
+
+update_index(Preflist, ReqID, Bucket, Metric) ->
+    riak_core_vnode_master:command(Preflist,
+                                   {update_index, ReqID, Bucket, Metric},
+                                   {raw, ReqID, self()},
+                                   ?MASTER).
+
+repair_index(IdxNode, Bucket, Index) ->
+    riak_core_vnode_master:command(IdxNode,
+                                   {repair_index, Bucket, Index},
+                                   ignore,
+                                   ?MASTER).
 
 init([Partition]) ->
     ok = dalmatiner_vacuum:register(),
+    erlang:send_after(?TICK, self(), tick),
+    Timestamp = erlang:system_time(milli_seconds),
     process_flag(trap_exit, true),
     random:seed(erlang:phash2([node()]),
                 erlang:monotonic_time(),
                 erlang:unique_integer()),
     P = list_to_atom(integer_to_list(Partition)),
+    {ok, N} = application:get_env(dalmatiner_db, n),
+    {ok, W} = application:get_env(dalmatiner_db, w),
     CT = case application:get_env(metric_vnode, cache_points) of
              {ok, V} ->
                  V;
@@ -108,11 +134,16 @@ init([Partition]) ->
                      end,
     FoldWorkerPool = {pool, metric_worker, WorkerPoolSize, []},
     {ok, IO} = metric_io:start_link(Partition),
+    {ok, MIdx} = metric_index:start_link(Partition),
     {ok, #state{
+            now = Timestamp,
             partition = Partition,
+            n = N,
+            w = W,
             node = node(),
             tbl = ets:new(P, [public, ordered_set]),
             io = IO,
+            index = MIdx,
             ct = CT
            },
      [FoldWorkerPool]}.
@@ -207,6 +238,16 @@ handle_command({mput, Data}, _Sender, State) ->
                                  do_put(Bucket, Metric, Time, Value, StateAcc)
                          end, State, Data),
     {reply, ok, State1};
+
+handle_command({update_index, _ReqID, Bucket, Metric}, _Sender,
+               State=#state{index=MIdx}) ->
+    ok = metric_index:update(MIdx, Bucket, Metric),
+    {reply, ok, State};
+
+handle_command({get_index, ReqID, Bucket}, _Sender,
+               State=#state{partition = Idx, index=MIdx}) ->
+    {ok, Metrics} = metric_index:get(MIdx, Bucket),
+    {reply, {ok, ReqID, Idx, Metrics}, State};
 
 handle_command({put, Bucket, Metric, {Time, Value}}, _Sender, State)
   when is_binary(Bucket), is_binary(Metric), is_integer(Time) ->
@@ -358,12 +399,17 @@ handle_coverage({delete, Bucket}, _KeySpaces, _Sender,
     Reply = {ok, undefined, {P, N}, R},
     {reply, Reply, State}.
 
+handle_info(tick, State = #state{}) ->
+    Timestamp = erlang:system_time(milli_seconds),
+    erlang:send_after(?TICK, self(), tick),
+    {ok, State#state{now = Timestamp}};
+
 handle_info(vacuum, State = #state{io = IO, partition = P}) ->
     lager:info("[vaccum] Starting vaccum for partution ~p.", [P]),
     {ok, Bs} = metric_io:buckets(IO),
     State1 =
         lists:foldl(fun (Bucket, SAcc) ->
-                            case expiry(Bucket, SAcc) of
+                            case expiery(Bucket, SAcc) of
                                 {infinity, SAcc1} ->
                                     SAcc1;
                                 {Exp, SAcc1} ->
@@ -406,7 +452,7 @@ do_put(Bucket, Metric, Time, Value, State) ->
     do_put(Bucket, Metric, Time, Value, State, ?MAX_Q_LEN).
 
 do_put(Bucket, Metric, Time, Value,
-       State = #state{tbl = T, ct = CT, io = IO},
+       State = #state{tbl = T, ct = CT, io = IO, index = MIdx, n = N},
        Sync) when is_binary(Bucket), is_binary(Metric), is_integer(Time) ->
     Len = mmath_bin:length(Value),
     BM = {Bucket, Metric},
@@ -414,6 +460,8 @@ do_put(Bucket, Metric, Time, Value,
         {false, State1} ->
             State1;
         {true, State1} ->
+            ok = metric_index:propagate_metric(MIdx, Bucket, Metric, N),
+
             case ets:lookup(T, BM) of
                 %% If the data is before the first package in the cache we just
                 %% don't cache it this way we prevent overwriting already
@@ -465,28 +513,26 @@ reply(Reply, {_, ReqID, _} = Sender, #state{node=N, partition=P}) ->
     riak_core_vnode:reply(Sender, {ok, ReqID, {P, N}, Reply}).
 
 valid_ts(TS, Bucket, State) ->
-    case expiry(Bucket, State) of
+    case expiery(Bucket, State) of
         %% TODO:
         %% We ignore every data where the last point is older then the
         %% lifetime this means we could still potentially write in the
-        %% past if writing batches but this is a problem for another day!
+        %% past if writing baches but this is a problem for another day!
         {Exp, State1} when is_integer(Exp),
                            TS < Exp ->
             {false, State1};
         {_, State1} ->
             {true, State1}
     end.
-
 %% Return the latest point we'd ever want to save. This is more strict
 %% then the expiration we do on the data but it is strong enough for
 %% our guarantee.
-expiry(Bucket, State) ->
+expiery(Bucket, State = #state{now = Now}) ->
     case get_lifetime(Bucket, State) of
         {infinity, State1} ->
             {infinity, State1};
         {LT, State1} ->
             {Res, State2} = get_resolution(Bucket, State1),
-            Now = erlang:system_time(milli_seconds),
             Exp = (Now - LT) div Res,
             {Exp, State2}
     end.

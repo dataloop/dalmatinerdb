@@ -1,5 +1,5 @@
 %% @doc The coordinator for stat get operations.  The key here is to
-%% generate the preflist just like in wrtie_fsm and then query each
+%% generate the preflist just like in write_fsm and then query each
 %% replica and wait until a quorum is met.
 -module(dalmatiner_read_fsm).
 -behavior(gen_fsm).

@@ -57,8 +57,17 @@ list() ->
       list_buckets, metric_coverage, start, [list]).
 
 list(Bucket) ->
-    folsom_metrics:histogram_timed_update(
-      list_metrics, metric_coverage, start, [{metrics, Bucket}]).
+    VNodeInfo = {metric_vnode, metric},
+    case metric_index_fsm:get(VNodeInfo, Bucket) of
+        {ok, []} ->
+            {ok, SyncList} = 
+                folsom_metrics:histogram_timed_update(
+                  list_metrics, metric_coverage, start, [{metrics, Bucket}]),
+            %% TODO should the list sync from here or within the FSM itself?
+            {ok, SyncList};
+        {ok, Metrics} ->
+            {ok, Metrics}
+    end.
 
 list(Bucket, Prefix) ->
     folsom_metrics:histogram_timed_update(
@@ -69,21 +78,9 @@ do_put(Bucket, Metric, PPF, Time, Value, N, W) ->
     Preflist = riak_core_apl:get_apl(DocIdx, N, metric),
     ReqID = make_ref(),
     metric_vnode:put(Preflist, ReqID, Bucket, Metric, {Time, Value}),
-    do_wait(W, ReqID).
+    write_coordinator:do_wait(W, ReqID).
 
 do_mput(Preflist, Data, W) ->
     ReqID = make_ref(),
     metric_vnode:mput(Preflist, ReqID, Data),
-    do_wait(W, ReqID).
-
-do_wait(0, _ReqID) ->
-    ok;
-
-do_wait(W, ReqID) ->
-    receive
-        {ReqID, ok} ->
-            do_wait(W - 1, ReqID)
-    after
-        5000 ->
-            {error, timeout}
-    end.
+    write_coordinator:do_wait(W, ReqID).
