@@ -5,13 +5,12 @@
 %%% improve the cost of list operations.
 %%% The index is a `btrie' stored per Bucket, as space occupancy is minimized
 %%% by common prefix sharing among nodes.  As well as being permormant, the
-%%% `btrie' preserves ordering. An SBF (scalable bloom filter) `bloom' is used
-%%% to store previously seen {Bucket, Metric} pairs to avoid tree traversal
-%%% and updates where possible.
-%%% This allows for minimal overhead in managing the index.
-%%% Finally, all indexes and bucket pairs are stored using `gb_trees', forming
-%%% a forest.  `gb_trees' allow for efficient lookups that are comparable to
+%%% `btrie' preserves ordering. 
+%%% All indexes and bucket pairs are stored using `gb_trees', forming
+%%% a forest. `gb_trees' allow for efficient lookups that are comparable to
 %%% ETS lookups in efficiency.
+%%%
+%%% TODO: Add quickcheck tests for this module
 %%% @end
 %%%-------------------------------------------------------------------
 -module(metric_index).
@@ -26,22 +25,14 @@
          terminate/2, code_change/3]).
 
 -define(SERVER, ?MODULE).
+-define(INDEX_BUCKET, <<"metric_index">>).
 
-%% SDF Bloom filter settings
--define(INITIAL_CAPACITY, 100000).
+-record(index, {
+          last_repair_ts,
+          metrics }).
 
-%% TODO: Enhance the state to use an entry:
-%%
-%% -record(entry, {
-%%           last_sync_ts,
-%%           bloom,
-%%           metrics = btrie:new()
-%%          }).
-%%
-%% -opaque entry() :: #entry{}.
 -record(state, {
           partition,
-          bloom,
           indices=gb_trees:empty()
          }).
 
@@ -68,8 +59,8 @@ update(Pid, Bucket, Metric) ->
 propagate_metric(Pid, Bucket, Metric, N) ->
     gen_server:cast(Pid, {update, Bucket, Metric, N}).
 
-repair(Pid, Bucket, Metrics) ->
-    gen_server:cast(Pid, {repair, Bucket, Metrics}).
+repair(Pid, Bucket, MetricKeys) ->
+    gen_server:cast(Pid, {repair, Bucket, MetricKeys}).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -88,33 +79,23 @@ repair(Pid, Bucket, Metrics) ->
 %%--------------------------------------------------------------------
 init([Partition]) ->
     process_flag(trap_exit, true),
-    {ok, #state{ partition = Partition,
-                 bloom = bloom:sbf(?INITIAL_CAPACITY) }}.
+    {ok, #state { partition = Partition }}.
 
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
-%% Handling call messages
-%%
-%% @spec handle_call(Request, From, State) ->
-%%                                   {reply, Reply, State} |
-%%                                   {reply, Reply, State, Timeout} |
-%%                                   {noreply, State} |
-%%                                   {noreply, State, Timeout} |
-%%                                   {stop, Reason, Reply, State} |
-%%                                   {stop, Reason, State}
+%% Gets the list of metrics for the specified `Bucket', returns `undefined' 
+%% in the case that no index exists.
 %% @end
 %%--------------------------------------------------------------------
-
-%% Include any prefix search here
 handle_call({get, Bucket}, _From, State=#state{indices = Indices}) ->
-    Index = case gb_trees:lookup(Bucket, Indices) of
-        {value, Index0} ->
-            Index0;
-        none ->
-            btrie:new()
-    end,
-    {reply, {ok, Index}, State};
+    Idx = case gb_trees:lookup(Bucket, Indices) of
+              {value, Idx0} ->
+                  Idx0;
+              none ->
+                  undefined
+          end,
+    {reply, {ok, Idx}, State};
 
 handle_call(_Request, _From, State) ->
     Reply = ok,
@@ -123,23 +104,31 @@ handle_call(_Request, _From, State) ->
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
-%% Handling cast messages
-%%
-%% @spec handle_cast(Msg, State) -> {noreply, State} |
-%%                                  {noreply, State, Timeout} |
-%%                                  {stop, Reason, State}
+%% Updates the metrics index for `Bucket' with the given `Metric'.
 %% @end
 %%--------------------------------------------------------------------
 handle_cast({update, Bucket, Metric}, State) ->
     State1 = do_update(Bucket, Metric, State),
     {noreply, State1};
 
+%%--------------------------------------------------------------------
+%% @private
+%% @doc
+%% Sends the bucket/metric pair to all metadata vnodes on the preference list
+%% @end
+%%--------------------------------------------------------------------
 handle_cast({propagate_metric, Bucket, Metric, N}, State) ->
     ok = do_propagate_metric(Bucket, Metric, N),
     {noreply, State};
 
-handle_cast({repair, Bucket, Metrics}, State) ->
-    State1 = do_repair(Bucket, Metrics, State),
+%%--------------------------------------------------------------------
+%% @private
+%% @doc
+%% Replacs the current index for the `Bucket' with a quorum index.
+%% @end
+%%--------------------------------------------------------------------
+handle_cast({repair, Bucket, MetricKeys}, State) ->
+    {ok, State1} = do_repair(Bucket, MetricKeys, State),
     {noreply, State1};
 
 handle_cast(_Msg, State) ->
@@ -149,10 +138,6 @@ handle_cast(_Msg, State) ->
 %% @private
 %% @doc
 %% Handling all non call/cast messages
-%%
-%% @spec handle_info(Info, State) -> {noreply, State} |
-%%                                   {noreply, State, Timeout} |
-%%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
 handle_info({'EXIT', _From, _Reason}, State) ->
@@ -186,57 +171,59 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-do_repair(Bucket, Metrics, State) when is_list(Metrics) ->
-    AggrState = lists:foldl(
-                  fun (M, S) ->
-                          do_update(Bucket, M, S)
-                  end, State, Metrics),
-    AggrState.
+do_repair(Bucket, MetricKeys, State0=#state{indices=Indices0})
+  when is_list(MetricKeys) ->
+    I0 = empty_index(),
+    Metrics = btrie:new(MetricKeys),
+    Idx = I0#index{ metrics = Metrics },
+    Indices = gb_trees:enter(Bucket, Idx, Indices0),
+    {ok, State0#state{indices = Indices}}.
 
-do_update(Bucket, Metric, State=#state{bloom=BF})
+do_update(Bucket, Metric, State0=#state{indices=Indices0})
   when is_binary(Bucket), is_binary(Metric) ->
-    Entry = <<Bucket/binary, Metric/binary>>,
+    Idx1 = case gb_trees:lookup(Indices0, Bucket) of
+               {value, Idx0} ->
+                   Idx0;
+               none ->
+                   empty_index()
+           end,
 
-    case bloom:member(Entry, BF) of
+    Metrics = update_metrics(Metric, Idx1#index.metrics),
+    Idx = Idx1#index{ metrics = Metrics },
+    Indices = gb_trees:enter(Bucket, Idx, Indices0),
+    {ok, State0#state{indices = Indices}}.
+
+update_metrics(Metric, Metrics) ->
+    case btrie:is_key(Metric, Metrics) of
         true ->
-            State;
+            Metrics;
         false ->
-            %% A state monad could be useful to compose these S/E functions
-            {ok, State2} = update_bloom(BF, Entry, State),
-            {ok, State3} = update_index(Bucket, Metric, State2),
-            State3
-        end.
+            btrie:store(Metric, Metrics)
+    end.
 
-update_bloom(BF, Entry, State) ->
-    BF1 = bloom:add(Entry, BF),
-    {ok, State#state{bloom = BF1}}.
-
-%% TODO: Due to a small false positive probability in the bloom, the metric may
-%% already exist in its corresponding btrie. The btrie operation should guard
-%% against this possibility.
-update_index(Bucket, Metric, State=#state{indices=Indices}) ->
-    Indices1 = case gb_trees:lookup(Bucket, Indices) of
-                   {value, Index} ->
-                       Trie = btrie:store(Metric, Index),
-                       gb_trees:update(Bucket, Trie, Indices);
-                   none ->
-                       Trie = btrie:new([Metric]),
-                       gb_trees:insert(Bucket, Trie, Indices)
-               end,
-    {ok, State#state{indices = Indices1}}.
-
-
-%% Send an update to the index on replicas.  The operation is asynchronous, due
-%% to the cast operation. Normally, commands in riak_core are asynchronous
-%% already.  This extra level of indirection ensures that the master is not
-%% blocked, however, which seems to add additional latency to writes.
+%% @private
+%% @doc Send an update to the index on replicas.  The operation is 
+%% asynchronous, due to the cast operation. Normally, commands in riak_core 
+%% are asynchronous already.  This extra level of indirection ensures that the
+%% master is not blocked, however, which seems to add additional latency to 
+%% writes.
 %% TODO: Should the write_coordinator ensure that the update happens on W
 %% replicas?
 %% TODO: Should an alternative command be specified via the master?
 %% http://lists.basho.com/pipermail/riak-users_lists.basho.com/2011-December/006982.html
 do_propagate_metric(Bucket, Metric, N) ->
-    DocIdx = riak_core_util:chash_key({Bucket, Bucket}),
+    DocIdx = riak_core_util:chash_key({?INDEX_BUCKET, Bucket}),
     Preflist = riak_core_apl:get_apl(DocIdx, N, metric_metadata),
     ReqID = make_ref(),
     metric_vnode:update_index(Preflist, ReqID, Bucket, Metric),
     ok.
+
+%% @private
+%% @doc
+%% Create a new index for the given bucket.
+%% During a repair, the old values are discarded which may result in a lot of
+%% garbage.
+empty_index() ->
+    #index{
+          last_repair_ts = erlang:system_time(milli_seconds),
+          metrics = btrie:new() }.
