@@ -22,16 +22,14 @@
          handle_info/2,
          handle_exit/3]).
 
--export([mput/3, put/5, get/4, get_index/3, update_index/4]).
+-export([mput/3, put/5, get/4]).
 
 -ignore_xref([
               start_vnode/1,
               put/5,
               mput/3,
               get/4,
-              update_index/4,
               repair/4,
-              repair_index/3,
               handle_info/2,
               repair/3
              ]).
@@ -44,7 +42,6 @@
           tbl,
           ct,
           io,
-          index,
           now,
           resolutions = btrie:new(),
           lifetimes  = btrie:new()
@@ -91,24 +88,6 @@ get(Preflist, ReqID, {Bucket, Metric}, {Time, Count}) ->
                                    {fsm, undefined, self()},
                                    ?MASTER).
 
-get_index(Preflist, ReqID, Bucket) ->
-    riak_core_vnode_master:command(Preflist,
-                                   {get_index, ReqID, Bucket},
-                                   {fsm, undefined, self()},
-                                   ?MASTER).
-
-update_index(Preflist, ReqID, Bucket, Metric) ->
-    riak_core_vnode_master:command(Preflist,
-                                   {update_index, ReqID, Bucket, Metric},
-                                   {raw, ReqID, self()},
-                                   ?MASTER).
-
-repair_index(IdxNode, Bucket, Index) ->
-    riak_core_vnode_master:command(IdxNode,
-                                   {repair_index, Bucket, Index},
-                                   ignore,
-                                   ?MASTER).
-
 init([Partition]) ->
     ok = dalmatiner_vacuum:register(),
     erlang:send_after(?TICK, self(), tick),
@@ -134,7 +113,6 @@ init([Partition]) ->
                      end,
     FoldWorkerPool = {pool, metric_worker, WorkerPoolSize, []},
     {ok, IO} = metric_io:start_link(Partition),
-    {ok, MIdx} = metric_index:start_link(Partition),
     {ok, #state{
             now = Timestamp,
             partition = Partition,
@@ -143,7 +121,6 @@ init([Partition]) ->
             node = node(),
             tbl = ets:new(P, [public, ordered_set]),
             io = IO,
-            index = MIdx,
             ct = CT
            },
      [FoldWorkerPool]}.
@@ -238,16 +215,6 @@ handle_command({mput, Data}, _Sender, State) ->
                                  do_put(Bucket, Metric, Time, Value, StateAcc)
                          end, State, Data),
     {reply, ok, State1};
-
-handle_command({update_index, _ReqID, Bucket, Metric}, _Sender,
-               State=#state{index=MIdx}) ->
-    ok = metric_index:update(MIdx, Bucket, Metric),
-    {reply, ok, State};
-
-handle_command({get_index, ReqID, Bucket}, _Sender,
-               State=#state{partition = Idx, index=MIdx}) ->
-    {ok, Metrics} = metric_index:get(MIdx, Bucket),
-    {reply, {ok, ReqID, Idx, Metrics}, State};
 
 handle_command({put, Bucket, Metric, {Time, Value}}, _Sender, State)
   when is_binary(Bucket), is_binary(Metric), is_integer(Time) ->
@@ -452,7 +419,7 @@ do_put(Bucket, Metric, Time, Value, State) ->
     do_put(Bucket, Metric, Time, Value, State, ?MAX_Q_LEN).
 
 do_put(Bucket, Metric, Time, Value,
-       State = #state{tbl = T, ct = CT, io = IO, index = MIdx, n = N},
+       State = #state{tbl = T, ct = CT, io = IO, n = N},
        Sync) when is_binary(Bucket), is_binary(Metric), is_integer(Time) ->
     Len = mmath_bin:length(Value),
     BM = {Bucket, Metric},
@@ -460,8 +427,6 @@ do_put(Bucket, Metric, Time, Value,
         {false, State1} ->
             State1;
         {true, State1} ->
-            ok = metric_index:propagate_metric(MIdx, Bucket, Metric, N),
-
             case ets:lookup(T, BM) of
                 %% If the data is before the first package in the cache we just
                 %% don't cache it this way we prevent overwriting already

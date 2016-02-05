@@ -23,12 +23,17 @@ start_link() ->
 %% ===================================================================
 
 init([]) ->
-    VMaster = {metric_vnode_master,
-               {riak_core_vnode_master, start_link, [metric_vnode]},
-               permanent, 5000, worker, [riak_core_vnode_master]},
+    MetricVNodeMaster = {metric_vnode_master,
+                         {riak_core_vnode_master, start_link, [metric_vnode]},
+                         permanent, 5000, worker, [riak_core_vnode_master]},
+    MetaVNodeMaster = {metadata_vnode_master,
+                       {riak_core_vnode_master, start_link, [metadata_vnode]},
+                       permanent, 5000, worker, [riak_core_vnode_master]},
     CoverageFSMs = {metric_coverage_sup,
                     {metric_coverage_sup, start_link, []},
                     permanent, infinity, supervisor, [metric_coverage_sup]},
 
-    {ok, {{one_for_one, 5, 10}, [CoverageFSMs, VMaster]}}.
+    {ok, {{one_for_one, 5, 10}, [CoverageFSMs, 
+                                 MetricVNodeMaster,
+                                 MetaVNodeMaster]}}.
 
