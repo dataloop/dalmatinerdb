@@ -292,7 +292,7 @@ handle_call(delete, _From, State = #state{partition = Partition}) ->
     {reply, ok, State#state{mstore=gb_trees:empty()}};
 
 handle_call(close, _From, State) ->
-    b_trees:map(fun(_, {_, MSet}) ->
+    gb_trees:map(fun(_, {_, MSet}) ->
                          mstore:close(MSet)
                  end, State#state.mstore),
     State1 = State#state{mstore=gb_trees:empty()},

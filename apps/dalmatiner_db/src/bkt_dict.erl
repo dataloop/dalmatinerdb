@@ -6,14 +6,16 @@
 
 -export_type([bkt_dict/0]).
 
--record(bkt_dict, {bucket, ppf, dict, n, w, nodes, cbin}).
+-record(bkt_dict, {bucket, ppf, dict, n, w, nodes, metrics, cbin}).
 
 -type bkt_dict() :: #bkt_dict{}.
 
 new(Bkt, N, W) ->
     PPF = dalmatiner_opt:ppf(Bkt),
     Dict = dict:new(),
-    update_chash(#bkt_dict{bucket = Bkt, ppf = PPF, dict = Dict, n = N, w = W}).
+    Metrics = sets:new(),
+    update_chash(#bkt_dict{bucket = Bkt, ppf = PPF, dict = Dict,
+                           metrics = Metrics, n = N, w = W}).
 
 add(Metric, Time, Points, BD = #bkt_dict{ppf = PPF}) ->
     Count = mmath_bin:length(Points),
@@ -21,12 +23,14 @@ add(Metric, Time, Points, BD = #bkt_dict{ppf = PPF}) ->
     Splits = mstore:make_splits(Time, Count, PPF),
     insert_metric(Metric, Splits, Points, BD).
 
-flush(BD = #bkt_dict{dict = Dict, w = W}) ->
+flush(BD = #bkt_dict{dict = Dict, bucket = Bkt, metrics = Metrics,
+                     n = N, w = W}) ->
     BD1 = #bkt_dict{nodes = Nodes} = update_chash(BD),
-    metric:mput(Nodes, Dict, W),
+    metric:mput(Nodes, Dict, {Bkt, Metrics, N}, W),
     BD1#bkt_dict{dict = dict:new()}.
 
-
+%% @doc
+%% The ring state is cached here for performance reasons.
 update_chash(BD = #bkt_dict{n = N}) ->
     {ok, CBin} = riak_core_ring_manager:get_chash_bin(),
     Nodes1 = chash:nodes(chashbin:to_chash(CBin)),
@@ -38,11 +42,12 @@ insert_metric(_Metric, [], <<>>, BD) ->
 
 insert_metric(Metric, [{Time, Count} | Splits], PointsIn,
                BD = #bkt_dict{bucket = Bucket, cbin = CBin, ppf = PPF,
-                              dict = Dict}) ->
+                              metrics = Metrics, dict = Dict}) ->
     Size = (Count * ?DATA_SIZE),
     <<Points:Size/binary, Rest/binary>> = PointsIn,
     DocIdx = riak_core_util:chash_key({Bucket, {Metric, Time div PPF}}),
     {Idx, _} = chashbin:itr_value(chashbin:exact_iterator(DocIdx, CBin)),
     Dict1 = dict:append(Idx, {Bucket, Metric, Time, Points}, Dict),
-    BD1 = BD#bkt_dict{dict = Dict1},
+    Metrics1 = sets:add_element(Metric, Metrics),
+    BD1 = BD#bkt_dict{dict = Dict1, metrics = Metrics1},
     insert_metric( Metric, Splits, Rest, BD1).

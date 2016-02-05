@@ -2,6 +2,7 @@
 -behaviour(riak_core_vnode).
 
 -include_lib("riak_core/include/riak_core_vnode.hrl").
+-include("metadata_vnode.hrl").
 
 
 -export([start_vnode/1,
@@ -50,9 +51,9 @@ get_index(Preflist, ReqID, Bucket) ->
                                    {fsm, undefined, self()},
                                    ?MASTER).
 
-update_index(Preflist, ReqID, Bucket, Metric) ->
+update_index(Preflist, ReqID, Bucket, Metrics) ->
     riak_core_vnode_master:command(Preflist,
-                                   {update_index, ReqID, Bucket, Metric},
+                                   {update_index, ReqID, Bucket, Metrics},
                                    {raw, ReqID, self()},
                                    ?MASTER).
 
@@ -79,15 +80,15 @@ init([Partition]) ->
               },
     {ok, State}.
 
-handle_command({update_index, _ReqID, Bucket, Metric}, _Sender,
+handle_command({update_index, _ReqID, Bucket, Metrics}, _Sender,
                State=#state{index=MIdx}) ->
-    ok = metric_index:update(MIdx, Bucket, Metric),
+    ok = metric_index:update(MIdx, Bucket, Metrics),
     {reply, ok, State};
 
 handle_command({get_index, ReqID, Bucket}, _Sender,
                State=#state{partition = Idx, index=MIdx}) ->
-    {ok, Metrics} = metric_index:get(MIdx, Bucket),
-    {reply, {ok, ReqID, Idx, Metrics}, State};
+    {ok, Metrics1} = metric_index:get(MIdx, Bucket),
+    {reply, {ok, ReqID, Idx, Metrics1}, State};
 
 handle_command({repair_index, Bucket, Metrics}, _Sender,
                State=#state{index=MIdx}) ->
@@ -121,24 +122,23 @@ delete(State) ->
 handle_coverage(_Req, _KeySpaces, _Sender, State) ->
     {stop, not_implemented, State}.
 
-handle_info({'EXIT', IO, normal}, State = #state{io = IO}) ->
+handle_info({'EXIT', Index, normal}, State = #state{index = Index}) ->
     {ok, State};
 
-handle_info({'EXIT', IO, E}, State = #state{io = IO}) ->
+handle_info({'EXIT', Index, E}, State = #state{index = Index}) ->
     {stop, E, State};
 
 handle_info(_, State) ->
     {ok, State}.
 
-handle_exit(IO, normal, State = #state{io = IO}) ->
+handle_exit(Index, normal, State = #state{index = Index}) ->
     {ok, State};
 
-handle_exit(IO, E, State = #state{io = IO}) ->
+handle_exit(Index, E, State = #state{index = Index}) ->
     {stop, E, State};
 
 handle_exit(_PID, _Reason, State) ->
     {noreply, State}.
 
-terminate(_Reason, #state{io = IO}) ->
-    metric_index:close(IO),
+terminate(_Reason, #state{index = _Index}) ->
     ok.

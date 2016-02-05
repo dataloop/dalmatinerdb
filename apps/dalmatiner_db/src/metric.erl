@@ -1,8 +1,10 @@
 -module(metric).
 
+-include("apps/metric_vnode/src/metadata_vnode.hrl").
+
 -export([
          put/4,
-         mput/3,
+         mput/4,
          get/4,
          get/5,
          list/0,
@@ -13,9 +15,8 @@
 
 -ignore_xref([update_ttl/2, get/4, put/4]).
 
-
-
-mput(Nodes, Acc, W) ->
+mput(Nodes, Acc, {Bucket, Metrics, N}, W) ->
+    update_metadata(Bucket, sets:to_list(Metrics), N),
     folsom_metrics:histogram_timed_update(
       mput, dict, fold,
       [fun(DocIdx, Data, ok) ->
@@ -57,10 +58,10 @@ list() ->
       list_buckets, metric_coverage, start, [list]).
 
 list(Bucket) ->
-    VNodeInfo = {metric_vnode, metric},
+    VNodeInfo = {metadata_vnode, metric_metadata},
     case metric_index_fsm:get(VNodeInfo, Bucket) of
         {ok, []} ->
-            {ok, SyncList} = 
+            {ok, SyncList} =
                 folsom_metrics:histogram_timed_update(
                   list_metrics, metric_coverage, start, [{metrics, Bucket}]),
             %% TODO should the list sync from here or within the FSM itself?
@@ -73,14 +74,22 @@ list(Bucket, Prefix) ->
     folsom_metrics:histogram_timed_update(
       list_metrics, metric_coverage, start, [{metrics, Bucket, Prefix}]).
 
+update_metadata(Bucket, Metrics, N) when is_list(Metrics) ->
+    DocIdx = riak_core_util:chash_key({?METRIC_INDEX_BUCKET, Bucket}),
+    Preflist = riak_core_apl:get_apl(DocIdx, N, metric_metadata),
+    ReqID = make_ref(),
+    metadata_vnode:update_index(Preflist, ReqID, Bucket, Metrics),
+    ok.
+
 do_put(Bucket, Metric, PPF, Time, Value, N, W) ->
+    update_metadata(Bucket, [Metric], N),
     DocIdx = riak_core_util:chash_key({Bucket, {Metric, Time div PPF}}),
     Preflist = riak_core_apl:get_apl(DocIdx, N, metric),
     ReqID = make_ref(),
     metric_vnode:put(Preflist, ReqID, Bucket, Metric, {Time, Value}),
-    write_coordinator:do_wait(W, ReqID).
+    request_coordinator:do_wait(W, ReqID).
 
 do_mput(Preflist, Data, W) ->
     ReqID = make_ref(),
     metric_vnode:mput(Preflist, ReqID, Data),
-    write_coordinator:do_wait(W, ReqID).
+    request_coordinator:do_wait(W, ReqID).

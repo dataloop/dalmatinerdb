@@ -5,7 +5,7 @@
 %%% improve the cost of list operations.
 %%% The index is a `btrie' stored per Bucket, as space occupancy is minimized
 %%% by common prefix sharing among nodes.  As well as being permormant, the
-%%% `btrie' preserves ordering. 
+%%% `btrie' preserves ordering.
 %%% All indexes and bucket pairs are stored using `gb_trees', forming
 %%% a forest. `gb_trees' allow for efficient lookups that are comparable to
 %%% ETS lookups in efficiency.
@@ -17,18 +17,19 @@
 
 -behaviour(gen_server).
 
+-include("metadata_vnode.hrl").
+
 %% API
--export([start_link/1, propagate_metric/4, update/3, get/2, repair/3]).
+-export([start_link/1, update/3, get/2, repair/3]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
 -define(SERVER, ?MODULE).
--define(INDEX_BUCKET, <<"metric_index">>).
 
 -record(index, {
-          last_repair_ts,
+          build_time,
           metrics }).
 
 -record(state, {
@@ -50,15 +51,20 @@
 start_link(Partition) ->
     gen_server:start_link(?MODULE, [Partition], []).
 
+%% @doc
+%% Gets the list of metrics for the specified `Bucket', returns `undefined'
+%% in the case that no index exists.
+-spec get(pid(), binary()) -> {ok, undefined} | {ok, [binary()]}.
 get(Pid, Bucket) ->
     gen_server:call(Pid, {get, Bucket}).
 
-update(Pid, Bucket, Metric) ->
-    gen_server:cast(Pid, {update, Bucket, Metric}).
+%% @doc
+%% Updates the metrics index for `Bucket' with the given `Metrics'.
+update(Pid, Bucket, Metrics) ->
+    gen_server:cast(Pid, {update, Bucket, Metrics}).
 
-propagate_metric(Pid, Bucket, Metric, N) ->
-    gen_server:cast(Pid, {update, Bucket, Metric, N}).
-
+%% @doc
+%% Replacs the current index for the `Bucket' with a quorum index.
 repair(Pid, Bucket, MetricKeys) ->
     gen_server:cast(Pid, {repair, Bucket, MetricKeys}).
 
@@ -66,32 +72,14 @@ repair(Pid, Bucket, MetricKeys) ->
 %%% gen_server callbacks
 %%%===================================================================
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Initializes the server
-%%
-%% @spec init(Args) -> {ok, State} |
-%%                     {ok, State, Timeout} |
-%%                     ignore |
-%%                     {stop, Reason}
-%% @end
-%%--------------------------------------------------------------------
 init([Partition]) ->
     process_flag(trap_exit, true),
     {ok, #state { partition = Partition }}.
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Gets the list of metrics for the specified `Bucket', returns `undefined' 
-%% in the case that no index exists.
-%% @end
-%%--------------------------------------------------------------------
 handle_call({get, Bucket}, _From, State=#state{indices = Indices}) ->
     Idx = case gb_trees:lookup(Bucket, Indices) of
-              {value, Idx0} ->
-                  Idx0;
+              {value, #index{metrics = Metrics}} ->
+                  Metrics;
               none ->
                   undefined
           end,
@@ -101,32 +89,10 @@ handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Updates the metrics index for `Bucket' with the given `Metric'.
-%% @end
-%%--------------------------------------------------------------------
-handle_cast({update, Bucket, Metric}, State) ->
-    State1 = do_update(Bucket, Metric, State),
+handle_cast({update, Bucket, Metrics}, State) ->
+    State1 = do_update(Bucket, Metrics, State),
     {noreply, State1};
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Sends the bucket/metric pair to all metadata vnodes on the preference list
-%% @end
-%%--------------------------------------------------------------------
-handle_cast({propagate_metric, Bucket, Metric, N}, State) ->
-    ok = do_propagate_metric(Bucket, Metric, N),
-    {noreply, State};
-
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Replacs the current index for the `Bucket' with a quorum index.
-%% @end
-%%--------------------------------------------------------------------
 handle_cast({repair, Bucket, MetricKeys}, State) ->
     {ok, State1} = do_repair(Bucket, MetricKeys, State),
     {noreply, State1};
@@ -179,9 +145,15 @@ do_repair(Bucket, MetricKeys, State0=#state{indices=Indices0})
     Indices = gb_trees:enter(Bucket, Idx, Indices0),
     {ok, State0#state{indices = Indices}}.
 
+do_update(Bucket, Metrics, State) when is_list(Metrics) ->
+    lists:foldl(fun (M, StateAcc) ->
+                        {ok, StateAcc1} = do_update(Bucket, M, StateAcc),
+                        StateAcc1
+                end, State, Metrics);
+
 do_update(Bucket, Metric, State0=#state{indices=Indices0})
   when is_binary(Bucket), is_binary(Metric) ->
-    Idx1 = case gb_trees:lookup(Indices0, Bucket) of
+    Idx1 = case gb_trees:lookup(Bucket, Indices0) of
                {value, Idx0} ->
                    Idx0;
                none ->
@@ -202,28 +174,11 @@ update_metrics(Metric, Metrics) ->
     end.
 
 %% @private
-%% @doc Send an update to the index on replicas.  The operation is 
-%% asynchronous, due to the cast operation. Normally, commands in riak_core 
-%% are asynchronous already.  This extra level of indirection ensures that the
-%% master is not blocked, however, which seems to add additional latency to 
-%% writes.
-%% TODO: Should the write_coordinator ensure that the update happens on W
-%% replicas?
-%% TODO: Should an alternative command be specified via the master?
-%% http://lists.basho.com/pipermail/riak-users_lists.basho.com/2011-December/006982.html
-do_propagate_metric(Bucket, Metric, N) ->
-    DocIdx = riak_core_util:chash_key({?INDEX_BUCKET, Bucket}),
-    Preflist = riak_core_apl:get_apl(DocIdx, N, metric_metadata),
-    ReqID = make_ref(),
-    metric_vnode:update_index(Preflist, ReqID, Bucket, Metric),
-    ok.
-
-%% @private
 %% @doc
 %% Create a new index for the given bucket.
 %% During a repair, the old values are discarded which may result in a lot of
 %% garbage.
 empty_index() ->
     #index{
-          last_repair_ts = erlang:system_time(milli_seconds),
+          build_time = erlang:system_time(milli_seconds),
           metrics = btrie:new() }.

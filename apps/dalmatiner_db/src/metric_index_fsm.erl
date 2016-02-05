@@ -5,8 +5,9 @@
 -module(metric_index_fsm).
 -behavior(gen_fsm).
 
+-include("apps/metric_vnode/src/metadata_vnode.hrl").
+
 -define(DEFAULT_TIMEOUT, 5000).
--define(METRIC_INDEX_BUCKET, <<"metric_index">>).
 
 %% API
 -export([start_link/4, get/2]).
@@ -29,7 +30,7 @@
                 timeout=?DEFAULT_TIMEOUT,
                 vnode,
                 system,
-                replies=btrie:new()}).
+                replies=[]}).
 
 -ignore_xref([
               code_change/4,
@@ -103,7 +104,7 @@ prepare(timeout, State=#state{bucket=Bucket,
 execute(timeout, State=#state{req_id=ReqId,
                               bucket=Bucket,
                               preflist=Preflist}) ->
-    metric_vnode:get_index(Preflist, ReqId, Bucket),
+    metadata_vnode:get_index(Preflist, ReqId, Bucket),
     {next_state, waiting, State}.
 
 %% @doc Wait for R replies and then respond to From (original client). The
@@ -118,7 +119,8 @@ waiting({ok, ReqID, IdxNode, ReplyIndex},
     State = State0#state{num_r=NumR, replies=Replies},
     case NumR of
         Min when Min >= R ->
-            From ! {ReqID, ok, merge(Replies)},
+            Merged = merge(Replies),
+            From ! {ReqID, ok, btrie:fetch_keys(Merged)},
             case NumR of
                 N ->
                     {next_state, finalize, State, 0};
@@ -153,7 +155,8 @@ finalize(timeout, SD=#state{
     CanonicalIndex = merge(Replies),
     case needs_repair(CanonicalIndex, Replies) of
         true ->
-            repair(Bucket, CanonicalIndex, Replies),
+            CanonicalKeys = btrie:fetch_keys(CanonicalIndex),
+            repair(Bucket, CanonicalIndex, CanonicalKeys, Replies),
             {stop, normal, SD};
         false ->
             {stop, normal, SD}
@@ -191,22 +194,22 @@ different(A) -> fun(B) -> A =/= B end.
 %% @impure
 %%
 %% @doc Repair any vnodes that do not have the correct object.
-repair(_, _, []) -> ok;
+repair(_, _, _, []) -> ok;
 
-repair(Bucket, CanonicalIndex, [{IdxNode, Index}|Replies]) ->
+repair(Bucket, CanonicalIndex, CanonicalKeys, [{IdxNode, Index}|Replies]) ->
     case CanonicalIndex == Index of
         true ->
-            repair(Bucket, CanonicalIndex, Replies);
+            repair(Bucket, CanonicalIndex, CanonicalKeys, Replies);
         false ->
-            metric_vnode:repair_index(IdxNode, Bucket, CanonicalIndex),
-            repair(Bucket, CanonicalIndex, Replies)
+            metadata_vnode:repair_index(IdxNode, Bucket, CanonicalKeys),
+            repair(Bucket, CanonicalIndex, CanonicalKeys, Replies)
     end.
 
 %% @pure
 %% Merge the reply with the canonical index, where the btries do not have
 %% values associated with the metric names.
-merge(Replies) ->
-    Indices = [Index || {_, Index} <- Replies],
+merge(Replies) when is_list(Replies) ->
+    Indices = [Index || {_, Index} <- Replies, Index =/= undefined],
     Seed = btrie:new(),
     lists:foldl(fun(Index, Acc) ->
                         btrie:merge(fun(_, _, _) -> t end, Index, Acc)

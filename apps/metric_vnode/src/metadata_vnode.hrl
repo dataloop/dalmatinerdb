@@ -1,0 +1,1 @@
+-define(METRIC_INDEX_BUCKET, <<"metric_index">>).
