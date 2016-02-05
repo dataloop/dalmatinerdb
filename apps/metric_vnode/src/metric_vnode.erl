@@ -37,7 +37,6 @@
 -record(state, {
           partition,
           n,
-          w,
           node,
           tbl,
           ct,
@@ -98,7 +97,6 @@ init([Partition]) ->
                 erlang:unique_integer()),
     P = list_to_atom(integer_to_list(Partition)),
     {ok, N} = application:get_env(dalmatiner_db, n),
-    {ok, W} = application:get_env(dalmatiner_db, w),
     CT = case application:get_env(metric_vnode, cache_points) of
              {ok, V} ->
                  V;
@@ -117,7 +115,6 @@ init([Partition]) ->
             now = Timestamp,
             partition = Partition,
             n = N,
-            w = W,
             node = node(),
             tbl = ets:new(P, [public, ordered_set]),
             io = IO,
@@ -419,7 +416,7 @@ do_put(Bucket, Metric, Time, Value, State) ->
     do_put(Bucket, Metric, Time, Value, State, ?MAX_Q_LEN).
 
 do_put(Bucket, Metric, Time, Value,
-       State = #state{tbl = T, ct = CT, io = IO, n = N},
+       State = #state{tbl = T, ct = CT, io = IO},
        Sync) when is_binary(Bucket), is_binary(Metric), is_integer(Time) ->
     Len = mmath_bin:length(Value),
     BM = {Bucket, Metric},

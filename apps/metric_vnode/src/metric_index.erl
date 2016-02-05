@@ -19,7 +19,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/1, propagate_metric/4, update/3, sync/3, get/2]).
+-export([start_link/1, propagate_metric/4, update/3, get/2, repair/3]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -68,8 +68,8 @@ update(Pid, Bucket, Metric) ->
 propagate_metric(Pid, Bucket, Metric, N) ->
     gen_server:cast(Pid, {update, Bucket, Metric, N}).
 
-sync(Pid, Bucket, Metrics) ->
-    gen_server:cast(Pid, {sync, Bucket, Metrics}).
+repair(Pid, Bucket, Metrics) ->
+    gen_server:cast(Pid, {repair, Bucket, Metrics}).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -138,8 +138,8 @@ handle_cast({propagate_metric, Bucket, Metric, N}, State) ->
     ok = do_propagate_metric(Bucket, Metric, N),
     {noreply, State};
 
-handle_cast({sync, Bucket, Metrics}, State) ->
-    State1 = do_sync(Bucket, Metrics, State),
+handle_cast({repair, Bucket, Metrics}, State) ->
+    State1 = do_repair(Bucket, Metrics, State),
     {noreply, State1};
 
 handle_cast(_Msg, State) ->
@@ -186,7 +186,7 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-do_sync(Bucket, Metrics, State) when is_list(Metrics) ->
+do_repair(Bucket, Metrics, State) when is_list(Metrics) ->
     AggrState = lists:foldl(
                   fun (M, S) ->
                           do_update(Bucket, M, S)

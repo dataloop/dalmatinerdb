@@ -8,6 +8,8 @@
          init/1,
          terminate/2,
          handle_command/3,
+         is_empty/1,
+         delete/1,
          handle_handoff_command/3,
          handoff_starting/2,
          handoff_cancelled/1,
@@ -30,7 +32,6 @@
 -record(state, {
           partition,
           n,
-          w,
           node,
           io,
           index
@@ -55,32 +56,28 @@ update_index(Preflist, ReqID, Bucket, Metric) ->
                                    {raw, ReqID, self()},
                                    ?MASTER).
 
-repair_index(IdxNode, Bucket, Index) ->
+repair_index(IdxNode, Bucket, Metrics) ->
     riak_core_vnode_master:command(IdxNode,
-                                   {repair_index, Bucket, Index},
+                                   {repair_index, Bucket, Metrics},
                                    ignore,
                                    ?MASTER).
 
 init([Partition]) ->
-    Timestamp = erlang:system_time(milli_seconds),
     process_flag(trap_exit, true),
     random:seed(erlang:phash2([node()]),
                 erlang:monotonic_time(),
                 erlang:unique_integer()),
     {ok, N} = application:get_env(dalmatiner_db, n),
-    {ok, W} = application:get_env(dalmatiner_db, w),
     {ok, IO} = metric_io:start_link(Partition),
     {ok, MIdx} = metric_index:start_link(Partition),
-    {ok, #state{
-            now = Timestamp,
-            partition = Partition,
-            n = N,
-            w = W,
-            node = node(),
-            io = IO,
-            index = MIdx,
-           },
-     [FoldWorkerPool]}.
+    State = #state{
+               partition = Partition,
+               n = N,
+               node = node(),
+               io = IO,
+               index = MIdx
+              },
+    {ok, State}.
 
 handle_command({update_index, _ReqID, Bucket, Metric}, _Sender,
                State=#state{index=MIdx}) ->
@@ -92,28 +89,13 @@ handle_command({get_index, ReqID, Bucket}, _Sender,
     {ok, Metrics} = metric_index:get(MIdx, Bucket),
     {reply, {ok, ReqID, Idx, Metrics}, State};
 
-handle_handoff_command(?FOLD_REQ{foldfun=Fun, acc0=Acc0}, Sender,
-                       State=#state{tbl=T, io = IO}) ->
-    ets:foldl(fun({{Bucket, Metric}, Start, Size, _, Array}, _) ->
-                      Bin = k6_bytea:get(Array, 0, Size * ?DATA_SIZE),
-                      k6_bytea:delete(Array),
-                      metric_io:write(IO, Bucket, Metric, Start, Bin)
-              end, ok, T),
-    ets:delete_all_objects(T),
-    FinishFun =
-        fun(Acc) ->
-                riak_core_vnode:reply(Sender, Acc)
-        end,
-    case metric_io:fold(IO, Fun, Acc0) of
-        {ok, AsyncWork} ->
-            {async, {fold, AsyncWork, FinishFun}, Sender, State};
-        empty ->
-            {async, {fold, fun() -> Acc0 end, FinishFun}, Sender, State}
-    end;
+handle_command({repair_index, Bucket, Metrics}, _Sender,
+               State=#state{index=MIdx}) ->
+    ok = metric_index:repair(MIdx, Bucket, Metrics),
+    {noreply, State}.
 
-%% We want to forward all the other handoff commands
 handle_handoff_command(_Message, _Sender, State) ->
-    {forward, State}.
+    {noreply, State}.
 
 handoff_starting(_TargetNode, State) ->
     {true, State}.
@@ -124,27 +106,20 @@ handoff_cancelled(State) ->
 handoff_finished(_TargetNode, State) ->
     {ok, State}.
 
-handle_handoff_data(Data, State) ->
-    {{Bucket, Metric}, ValList} = binary_to_term(Data),
-    true = is_binary(Bucket),
-    true = is_binary(Metric),
-    State1 = lists:foldl(fun ({T, Bin}, StateAcc) ->
-                                 do_put(Bucket, Metric, T, Bin, StateAcc, 2)
-                         end, State, ValList),
-    {reply, ok, State1}.
+handle_handoff_data(_Data, State) ->
+    {reply, ok, State}.
 
-encode_handoff_item(Key, Value) ->
-    term_to_binary({Key, Value}).
+encode_handoff_item(_ObjectName, _ObjectValue) ->
+    <<>>.
 
-handle_coverage({metrics, Bucket}, _KS, Sender, State = #state{io = IO}) ->
-    AsyncWork = fun() ->
-                        {ok, Ms} = metric_io:metrics(IO, Bucket),
-                        Ms
-                end,
-    FinishFun = fun(Data) ->
-                        reply(Data, Sender, State)
-                end,
-    {async, {fold, AsyncWork, FinishFun}, Sender, State};
+is_empty(State) ->
+    {true, State}.
+
+delete(State) ->
+    {ok, State}.
+
+handle_coverage(_Req, _KeySpaces, _Sender, State) ->
+    {stop, not_implemented, State}.
 
 handle_info({'EXIT', IO, normal}, State = #state{io = IO}) ->
     {ok, State};
@@ -164,15 +139,6 @@ handle_exit(IO, E, State = #state{io = IO}) ->
 handle_exit(_PID, _Reason, State) ->
     {noreply, State}.
 
-terminate(_Reason, #state{tbl = T, io = IO}) ->
-    ets:foldl(fun({{Bucket, Metric}, Start, Size, _, Array}, _) ->
-                      Bin = k6_bytea:get(Array, 0, Size * ?DATA_SIZE),
-                      k6_bytea:delete(Array),
-                      metric_io:write(IO, Bucket, Metric, Start, Bin)
-              end, ok, T),
-    ets:delete(T),
-    metric_io:close(IO),
+terminate(_Reason, #state{io = IO}) ->
+    metric_index:close(IO),
     ok.
-
-reply(Reply, {_, ReqID, _} = Sender, #state{node=N, partition=P}) ->
-    riak_core_vnode:reply(Sender, {ok, ReqID, {P, N}, Reply}).
