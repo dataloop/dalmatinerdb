@@ -236,7 +236,7 @@ update_index(Bucket, Metric, State=#state{indices=Indices}) ->
 %% http://lists.basho.com/pipermail/riak-users_lists.basho.com/2011-December/006982.html
 do_propagate_metric(Bucket, Metric, N) ->
     DocIdx = riak_core_util:chash_key({Bucket, Bucket}),
-    Preflist = riak_core_apl:get_apl(DocIdx, N, metric),
+    Preflist = riak_core_apl:get_apl(DocIdx, N, metric_metadata),
     ReqID = make_ref(),
     metric_vnode:update_index(Preflist, ReqID, Bucket, Metric),
     ok.
