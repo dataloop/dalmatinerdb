@@ -57,8 +57,8 @@ update_index(Preflist, ReqID, Bucket, Metrics) ->
                                    {raw, ReqID, self()},
                                    ?MASTER).
 
-repair_index(IdxNode, Bucket, Metrics) ->
-    riak_core_vnode_master:command(IdxNode,
+repair_index(Preflist, Bucket, Metrics) ->
+    riak_core_vnode_master:command(Preflist,
                                    {repair_index, Bucket, Metrics},
                                    ignore,
                                    ?MASTER).
@@ -86,9 +86,9 @@ handle_command({update_index, _ReqID, Bucket, Metrics}, _Sender,
     {reply, ok, State};
 
 handle_command({get_index, ReqID, Bucket}, _Sender,
-               State=#state{partition = Idx, index=MIdx}) ->
+               State=#state{partition = Idx, node = Node, index=MIdx}) ->
     {ok, Metrics1} = metric_index:get(MIdx, Bucket),
-    {reply, {ok, ReqID, Idx, Metrics1}, State};
+    {reply, {ok, ReqID, {Idx, Node}, Metrics1}, State};
 
 handle_command({repair_index, Bucket, Metrics}, _Sender,
                State=#state{index=MIdx}) ->

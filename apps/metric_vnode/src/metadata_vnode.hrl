@@ -1,1 +1,2 @@
 -define(METRIC_INDEX_BUCKET, <<"metric_index">>).
+-define(INDEX_LIFETIME, 300000). %% 5 minutes

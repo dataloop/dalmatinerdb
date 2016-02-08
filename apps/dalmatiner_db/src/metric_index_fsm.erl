@@ -44,7 +44,7 @@
               needs_repair/2,
               prepare/2,
               reconcile/1,
-              repair/3,
+              repair/4,
               start_link/5,
               terminate/3,
               unique/1,
@@ -184,6 +184,8 @@ terminate(_Reason, _SN, _State) ->
 %%
 %% @doc Given the merged object `CanonicalIndex' and a list of `Replies',
 %% determine if repair is needed.
+needs_repair([], _Replies) ->
+    false;
 needs_repair(CanonicalIndex, Replies) ->
     Indices = [ ReplyIndex || {_, ReplyIndex} <- Replies],
     lists:any(different(CanonicalIndex), Indices).

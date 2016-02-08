@@ -27,6 +27,7 @@
          terminate/2, code_change/3]).
 
 -define(SERVER, ?MODULE).
+-define(EMPTY_INDEX, <<>>).
 
 -record(index, {
           build_time,
@@ -78,10 +79,15 @@ init([Partition]) ->
 
 handle_call({get, Bucket}, _From, State=#state{indices = Indices}) ->
     Idx = case gb_trees:lookup(Bucket, Indices) of
-              {value, #index{metrics = Metrics}} ->
-                  Metrics;
               none ->
-                  undefined
+                  undefined;
+              {value, #index{metrics = ?EMPTY_INDEX}} ->
+                  undefined;
+              {value, Index = #index{metrics = Metrics}} ->
+                  case expired(timestamp(), Index) of
+                    true -> undefined;
+                    false -> Metrics
+                  end
           end,
     {reply, {ok, Idx}, State};
 
@@ -173,12 +179,17 @@ update_metrics(Metric, Metrics) ->
             btrie:store(Metric, Metrics)
     end.
 
+timestamp() ->
+    erlang:system_time(milli_seconds).
+
+expired(Ts, #index{build_time = BT}) ->
+    Ts - BT > ?INDEX_LIFETIME.
+
 %% @private
 %% @doc
 %% Create a new index for the given bucket.
 %% During a repair, the old values are discarded which may result in a lot of
 %% garbage.
 empty_index() ->
-    #index{
-          build_time = erlang:system_time(milli_seconds),
-          metrics = btrie:new() }.
+    #index{build_time = timestamp(),
+           metrics = btrie:new()}.

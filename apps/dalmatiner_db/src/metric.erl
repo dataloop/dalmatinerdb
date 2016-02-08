@@ -64,7 +64,16 @@ list(Bucket) ->
             {ok, SyncList} =
                 folsom_metrics:histogram_timed_update(
                   list_metrics, metric_coverage, start, [{metrics, Bucket}]),
-            %% TODO should the list sync from here or within the FSM itself?
+
+            %% Sync the coverage index back to all the N replicas
+            %% TODO: Clean up duplication, find the correct module where this
+            %% function should reside. Should it be the responsibility of the
+            %% FSM itself?
+            DocIdx = riak_core_util:chash_key({?METRIC_INDEX_BUCKET, Bucket}),
+            {ok, N} = application:get_env(dalmatiner_db, n),
+            Preflist = riak_core_apl:get_apl(DocIdx, N, metric_metadata),
+            metadata_vnode:repair_index(Preflist, Bucket, SyncList),
+
             {ok, SyncList};
         {ok, Metrics} ->
             {ok, Metrics}
