@@ -42,17 +42,16 @@ loop(Socket, Transport, State) ->
         {ok, Data} ->
             case dproto_tcp:decode(Data) of
                 buckets ->
-                    {ok, Bs} = metric:list(),
-                    Transport:send(Socket, dproto_tcp:encode_metrics(Bs)),
-                    loop(Socket, Transport, State);
+                    Res = metric:list(),
+                    do_send_listing(Socket, Transport, State, buckets, Res, []);
                 {list, Bucket} ->
-                    {ok, Ms} = metric:list(Bucket),
-                    Transport:send(Socket, dproto_tcp:encode_metrics(Ms)),
-                    loop(Socket, Transport, State);
+                    Res = metric:list(Bucket),
+                    do_send_listing(Socket, Transport, State, metrics, Res,
+                                    [Bucket]);
                 {list, Bucket, Prefix} ->
-                    {ok, Ms} = metric:list(Bucket, Prefix),
-                    Transport:send(Socket, dproto_tcp:encode_metrics(Ms)),
-                    loop(Socket, Transport, State);
+                    Res = metric:list(Bucket, Prefix),
+                    do_send_listing(Socket, Transport, State, metrics, Res,
+                                    [Bucket, Prefix]);
                 {get, B, M, T, C} ->
                     do_send(Socket, Transport, B, M, T, C),
                     loop(Socket, Transport, State);
@@ -75,6 +74,17 @@ loop(Socket, Transport, State) ->
             lager:error("[tcp:loop] Error: ~p~n", [E]),
             ok = Transport:close(Socket)
     end.
+
+do_send_listing(Socket, Transport, State, Entity, Res, Args) ->
+    case Res of
+        {ok, Ms} ->
+            Transport:send(Socket, dproto_tcp:encode_metrics(Ms));
+        {error, Error} ->
+            lager:error("[tcp] Error listing ~s with args ~s: ~s",
+                        [Entity, Args, Error])
+    end,
+    loop(Socket, Transport, State).
+
 do_send(Socket, Transport, B, M, T, C) ->
     PPF = dalmatiner_opt:ppf(B),
     [{T0, C0} | Splits] = mstore:make_splits(T, C, PPF),

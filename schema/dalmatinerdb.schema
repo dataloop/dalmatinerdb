@@ -72,7 +72,7 @@
 %% For good consistency N  < (R + W) should be true.
 {mapping, "n", "dalmatiner_db.n",
  [{datatype, integer},
-  {default, 1}]}.
+  {default, 4}]}.
 
 %% @doc The number of replies requried for a read request to succeed
 %% The lower the value the faster the replies but the more likely stale
