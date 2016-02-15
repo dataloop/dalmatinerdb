@@ -35,6 +35,7 @@
                 val,
                 vnode,
                 system,
+                timing = [],
                 replies=[] :: [reply_src()]}).
 
 -ignore_xref([
@@ -113,17 +114,19 @@ init([ReqId, {VNode, System}, Op, From, Entity, Val]) ->
                 vnode=VNode,
                 system=System,
                 entity=Entity},
-    {ok, prepare, SD, 0}.
+    SD1 = add_timing(init, SD),
+    {ok, prepare, SD1, 0}.
 
 %% @doc Calculate the Preflist.
 prepare(timeout, SD0=#state{entity={B, M},
                             system=System,
                             n=N}) ->
 
+    SD = add_timing(prepare, SD0),
     DocIdx = riak_core_util:chash_key({B, M}),
     Prelist = riak_core_apl:get_apl(DocIdx, N, System),
-    SD = SD0#state{preflist=Prelist},
-    {next_state, execute, SD, 0}.
+    SD1 = SD#state{preflist=Prelist},
+    {next_state, execute, SD1, 0}.
 
 %% @doc Execute the get reqs.
 execute(timeout, SD0=#state{req_id=ReqId,
@@ -131,6 +134,7 @@ execute(timeout, SD0=#state{req_id=ReqId,
                             op=Op,
                             val=Val,
                             preflist=Prelist}) ->
+    SD = add_timing(execute, SD0),
     case Entity of
         undefined ->
             metric_vnode:Op(Prelist, ReqId);
@@ -143,7 +147,7 @@ execute(timeout, SD0=#state{req_id=ReqId,
                     metric_vnode:Op(Prelist, ReqId, {Bucket, Metric}, Val)
             end
     end,
-    {next_state, waiting, SD0}.
+    {next_state, waiting, SD}.
 
 %% @doc Wait for R replies and then respond to From (original client
 %% that called `get/2').
@@ -154,9 +158,10 @@ execute(timeout, SD0=#state{req_id=ReqId,
 waiting({ok, ReqID, IdxNode, Obj},
         SD0=#state{from=From, num_r=NumR0, replies=Replies0,
                    r=R, n=N, timeout=Timeout}) ->
+    SD = add_timing({waiting, IdxNode}, SD0),
     NumR = NumR0 + 1,
     Replies = [{IdxNode, Obj}|Replies0],
-    SD = SD0#state{num_r=NumR, replies=Replies},
+    SD1 = SD#state{num_r=NumR, replies=Replies},
     case NumR of
         Min when Min >= R ->
             case merge(Replies) of
@@ -167,33 +172,37 @@ waiting({ok, ReqID, IdxNode, Obj},
             end,
             case NumR of
                 N ->
-                    {next_state, finalize, SD, 0};
+                    {next_state, finalize, SD1, 0};
                 _ ->
-                    {next_state, wait_for_n, SD, Timeout}
+                    {next_state, wait_for_n, SD1, Timeout}
             end;
         _ ->
-            {next_state, waiting, SD}
+            {next_state, waiting, SD1}
     end.
 
 wait_for_n({ok, _ReqID, IdxNode, Obj},
            SD0=#state{n=N, num_r=NumR, replies=Replies0}) when NumR == N - 1 ->
+    SD = add_timing({wait_for_n, IdxNode}, SD0),
     Replies = [{IdxNode, Obj}|Replies0],
-    {next_state, finalize, SD0#state{num_r=N, replies=Replies}, 0};
+    {next_state, finalize, SD#state{num_r=N, replies=Replies}, 0};
 
 wait_for_n({ok, _ReqID, IdxNode, Obj},
            SD0=#state{num_r=NumR0, replies=Replies0, timeout=Timeout}) ->
+    SD = add_timing({wait_for_n, IdxNode}, SD0),
     NumR = NumR0 + 1,
     Replies = [{IdxNode, Obj}|Replies0],
-    {next_state, wait_for_n, SD0#state{num_r=NumR, replies=Replies}, Timeout};
+    {next_state, wait_for_n, SD#state{num_r=NumR, replies=Replies}, Timeout};
 
 %% TODO partial repair?
-wait_for_n(timeout, SD) ->
+wait_for_n(timeout, SD0) ->
+    SD = add_timing(wait_for_n_timeout, SD0),
     {stop, timeout, SD}.
 
-finalize(timeout, SD=#state{
+finalize(timeout, SD0=#state{
                         val = {Time, _},
                         replies=Replies,
                         entity=Entity}) ->
+    SD = add_timing(finalize, SD0),
     MObj = merge(Replies),
     case needs_repair(MObj, Replies) of
         true ->
@@ -285,3 +294,7 @@ unique(L) ->
 
 mk_reqid() ->
     erlang:unique_integer().
+
+add_timing(StageInfo, State=#state{timing=Timings}) when is_list(Timings) ->
+    Timing = {StageInfo, erlang:system_time(milli_seconds)},
+    State#state{timing = [Timing|Timings]}.
