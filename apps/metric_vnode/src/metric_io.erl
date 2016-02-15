@@ -66,15 +66,15 @@ swrite(Pid, Bucket, Metric, Time, Value) ->
 read(Pid, Bucket, Metric, Time, Count, ReqID, Sender) ->
     case erlang:process_info(Pid, message_queue_len) of
         {message_queue_len, N} when N > ?MAX_Q_LEN ->
-            sread(Pid, Bucket, Metric, Time, Count, ReqID);
-        _ ->
+            sread(Pid, Bucket, Metric, Time, Count, ReqID, N);
+        {message_queue_len, N} ->
             gen_server:cast(Pid, {read, Bucket, Metric, Time, Count, ReqID,
-                                  Sender})
+                                  Sender, N})
     end.
 
-sread(Pid, Bucket, Metric, Time, Count, ReqID) ->
+sread(Pid, Bucket, Metric, Time, Count, ReqID, N) ->
     sync_call(fun() -> gen_server:call(Pid, {read, Bucket, Metric, Time, Count,
-                                             ReqID}) end).
+                                             ReqID, N}) end).
 
 sync_call(Thunk) ->
     try
@@ -385,10 +385,10 @@ handle_call({write, Bucket, Metric, Time, Value}, _From, State) ->
     State1 = do_write(Bucket, Metric, Time, Value, State),
     {reply, ok, State1};
 
-handle_call({read, Bucket, Metric, Time, Count, ReqID, _Sender}, _From,
+handle_call({read, Bucket, Metric, Time, Count, ReqID, _Sender, QLen}, _From,
             State = #state{node = N, partition = P}) ->
     {Data, State1} = do_read(Bucket, Metric, Time, Count, State),
-    {reply, {ok, ReqID, {P, N}, Data}, State1};
+    {reply, {ok, ReqID, QLen, {P, N}, Data}, State1};
 
 handle_call(_Request, _From, State) ->
     Reply = ok,
@@ -408,10 +408,10 @@ handle_cast({write, Bucket, Metric, Time, Value}, State) ->
     State1 = do_write(Bucket, Metric, Time, Value, State),
     {noreply, State1};
 
-handle_cast({read, Bucket, Metric, Time, Count, ReqID, Sender},
+handle_cast({read, Bucket, Metric, Time, Count, ReqID, Sender, QLen},
             State = #state{node = N, partition = P}) ->
     {Data, State1} = do_read(Bucket, Metric, Time, Count, State),
-    riak_core_vnode:reply(Sender, {ok, ReqID, {P, N}, Data}),
+    riak_core_vnode:reply(Sender, {ok, ReqID, QLen, {P, N}, Data}),
     {noreply, State1};
 
 handle_cast(_Msg, State) ->

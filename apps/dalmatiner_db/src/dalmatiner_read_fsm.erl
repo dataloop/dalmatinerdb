@@ -4,7 +4,7 @@
 -module(dalmatiner_read_fsm).
 -behavior(gen_fsm).
 
--define(DEFAULT_TIMEOUT, 5000).
+-define(DEFAULT_TIMEOUT, 60000).
 
 %% API
 -export([start_link/6, start/2, start/3, start/4]).
@@ -155,10 +155,10 @@ execute(timeout, SD0=#state{req_id=ReqId,
 %% reply
 %% TODO: read repair...or another blog post?
 
-waiting({ok, ReqID, IdxNode, Obj},
+waiting({ok, ReqID, QLen, IdxNode, Obj},
         SD0=#state{from=From, num_r=NumR0, replies=Replies0,
                    r=R, n=N, timeout=Timeout}) ->
-    SD = add_timing({waiting, IdxNode}, SD0),
+    SD = add_timing({waiting, QLen, IdxNode}, SD0),
     NumR = NumR0 + 1,
     Replies = [{IdxNode, Obj}|Replies0],
     SD1 = SD#state{num_r=NumR, replies=Replies},
@@ -180,15 +180,15 @@ waiting({ok, ReqID, IdxNode, Obj},
             {next_state, waiting, SD1}
     end.
 
-wait_for_n({ok, _ReqID, IdxNode, Obj},
+wait_for_n({ok, _ReqID, QLen, IdxNode, Obj},
            SD0=#state{n=N, num_r=NumR, replies=Replies0}) when NumR == N - 1 ->
-    SD = add_timing({wait_for_n, IdxNode}, SD0),
+    SD = add_timing({wait_for_n, QLen, IdxNode}, SD0),
     Replies = [{IdxNode, Obj}|Replies0],
     {next_state, finalize, SD#state{num_r=N, replies=Replies}, 0};
 
-wait_for_n({ok, _ReqID, IdxNode, Obj},
+wait_for_n({ok, _ReqID, QLen, IdxNode, Obj},
            SD0=#state{num_r=NumR0, replies=Replies0, timeout=Timeout}) ->
-    SD = add_timing({wait_for_n, IdxNode}, SD0),
+    SD = add_timing({wait_for_n, QLen, IdxNode}, SD0),
     NumR = NumR0 + 1,
     Replies = [{IdxNode, Obj}|Replies0],
     {next_state, wait_for_n, SD#state{num_r=NumR, replies=Replies}, Timeout};
@@ -203,6 +203,7 @@ finalize(timeout, SD0=#state{
                         replies=Replies,
                         entity=Entity}) ->
     SD = add_timing(finalize, SD0),
+    lager:info("[fsm] Dumping state: ~p", [SD]),
     MObj = merge(Replies),
     case needs_repair(MObj, Replies) of
         true ->
