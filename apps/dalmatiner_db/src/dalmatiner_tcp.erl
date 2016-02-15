@@ -43,14 +43,14 @@ loop(Socket, Transport, State) ->
             case dproto_tcp:decode(Data) of
                 buckets ->
                     Res = metric:list(),
-                    do_send_listing(Socket, Transport, State, buckets, Res, []);
+                    send_listing(Socket, Transport, State, buckets, Res, []);
                 {list, Bucket} ->
                     Res = metric:list(Bucket),
-                    do_send_listing(Socket, Transport, State, metrics, Res,
+                    send_listing(Socket, Transport, State, metrics, Res,
                                     [Bucket]);
                 {list, Bucket, Prefix} ->
                     Res = metric:list(Bucket, Prefix),
-                    do_send_listing(Socket, Transport, State, metrics, Res,
+                    send_listing(Socket, Transport, State, metrics, Res,
                                     [Bucket, Prefix]);
                 {get, B, M, T, C} ->
                     do_send(Socket, Transport, B, M, T, C),
@@ -75,39 +75,56 @@ loop(Socket, Transport, State) ->
             ok = Transport:close(Socket)
     end.
 
-do_send_listing(Socket, Transport, State, Entity, Res, Args) ->
+send_listing(Socket, Transport, State, Entity, Res, Args) ->
     case Res of
         {ok, Ms} ->
             Transport:send(Socket, dproto_tcp:encode_metrics(Ms));
         {error, Error} ->
-            lager:error("[tcp] Error listing ~s with args ~s: ~s",
+            lager:error("[tcp] Error listing ~p with args ~p: ~p",
                         [Entity, Args, Error])
     end,
     loop(Socket, Transport, State).
 
 do_send(Socket, Transport, B, M, T, C) ->
     PPF = dalmatiner_opt:ppf(B),
-    [{T0, C0} | Splits] = mstore:make_splits(T, C, PPF),
-    {ok, Resolution, Points} = metric:get(B, M, PPF, T0, C0),
+    %% Assume that splits is always non-empty
+    Splits = mstore:make_splits(T, C, PPF),
     %% Set the socket to no package control so we can do that ourselfs.
     Transport:setopts(Socket, [{packet, 0}]),
     %% TODO: make this math for configureable length
     %% 8 (resolution + points)
     Size = 8 + (C * 8),
-    Padding = mmath_bin:empty(C0 - mmath_bin:length(Points)),
-    Transport:send(Socket, <<Size:32/integer, Resolution:64/integer,
-                             Points/binary, Padding/binary>>),
-    send_parts(Socket, Transport, PPF, B, M, Splits).
+    PartNum = 0,
+    send_parts(Socket, Transport, Size, PartNum, PPF, B, M, Splits).
 
-send_parts(Socket, Transport, _PPF, _B, _M, []) ->
+send_part(Socket, Transport, Size, N, {PPF, B, M, T, C}=ReadInfo) ->
+    case metric:get(B, M, PPF, T, C) of
+        {ok, Resolution, Points} ->
+            Padding = mmath_bin:empty(C - mmath_bin:length(Points)),
+
+            case N of
+                PartNum when PartNum =:= 0 ->
+                    Transport:send(Socket, <<Size:32/integer,
+                                             Resolution:64/integer,
+                                             Points/binary,
+                                             Padding/binary>>);
+                _ ->
+                    Transport:send(Socket, <<Points/binary, Padding/binary>>)
+            end;
+        {error, Error} ->
+            lager:error("[tcp] Error getting metric part with args ~p: ~p",
+                        [ReadInfo, Error]),
+            {error, Error}
+    end.
+
+send_parts(Socket, Transport, _Size, _N, _PPF, _B, _M, []) ->
     %% Reset the socket to 4 byte packages
     Transport:setopts(Socket, [{packet, 4}]);
 
-send_parts(Socket, Transport, PPF, B, M, [{T, C} | Splits]) ->
-    {ok, _Resolution, Points} = metric:get(B, M, PPF, T, C),
-    Padding = mmath_bin:empty(C - mmath_bin:length(Points)),
-    Transport:send(Socket, <<Points/binary, Padding/binary>>),
-    send_parts(Socket, Transport, PPF, B, M, Splits).
+send_parts(Socket, Transport, Size, N, PPF, B, M, [{T, C} | Splits]) ->
+    ReadInfo = {PPF, B, M, T, C},
+    send_part(Socket, Transport, Size, N, ReadInfo),
+    send_parts(Socket, Transport, Size, N+1, PPF, B, M, Splits).
 
 -spec stream_loop(port(), term(), stream_state(),
                   {dproto_tcp:stream_message(), binary()}) ->

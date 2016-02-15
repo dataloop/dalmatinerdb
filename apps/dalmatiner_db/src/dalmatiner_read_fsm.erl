@@ -295,6 +295,11 @@ unique(L) ->
 mk_reqid() ->
     erlang:unique_integer().
 
-add_timing(StageInfo, State=#state{timing=Timings}) when is_list(Timings) ->
-    Timing = {StageInfo, erlang:system_time(milli_seconds)},
+add_timing(Phase, State=#state{timing=[T1|Timings]}) when is_list(Timings) ->
+    Ts = erlang:system_time(milli_seconds),
+    {_Phase, OldTs, _Delta} = T1,
+    Timing = {Phase, Ts, Ts - OldTs},
+    State#state{timing = [Timing,T1|Timings]};
+add_timing(Phase, State=#state{timing=Timings}) when is_list(Timings) ->
+    Timing = {Phase, erlang:system_time(milli_seconds), 0},
     State#state{timing = [Timing|Timings]}.
