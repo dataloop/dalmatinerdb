@@ -60,11 +60,8 @@ write(Pid, Bucket, Metric, Time, Value, MaxLen) ->
     end.
 
 swrite(Pid, Bucket, Metric, Time, Value) ->
-  try
-      gen_server:call(Pid, {write, Bucket, Metric, Time, Value})
-  catch
-    exit:{timeout,_} -> {error, timeout}
-  end.
+    sync_call(fun() -> gen_server:call(Pid, {write, Bucket, Metric, Time,
+                                             Value}) end).
 
 read(Pid, Bucket, Metric, Time, Count, ReqID, Sender) ->
     case erlang:process_info(Pid, message_queue_len) of
@@ -76,7 +73,15 @@ read(Pid, Bucket, Metric, Time, Count, ReqID, Sender) ->
     end.
 
 sread(Pid, Bucket, Metric, Time, Count, ReqID) ->
-    gen_server:call(Pid, {read, Bucket, Metric, Time, Count, ReqID}).
+    sync_call(fun() -> gen_server:call(Pid, {read, Bucket, Metric, Time, Count,
+                                             ReqID}) end).
+
+sync_call(Thunk) ->
+    try
+        Thunk()
+    catch
+        exit:{timeout,_} -> {error, timeout}
+    end.
 
 buckets(Pid) ->
     gen_server:call(Pid, buckets).
