@@ -192,6 +192,7 @@ repair_update_cache(Bucket, Metric, Time, Count, Value,
 %% Repair request are always full values not including non set values!
 handle_command({repair, Bucket, Metric, Time, Value}, _Sender, State)
   when is_binary(Bucket), is_binary(Metric), is_integer(Time) ->
+    dalmatiner_metrics:inc_repairs(),
     Count = mmath_bin:length(Value),
     case valid_ts(Time + Count, Bucket, State) of
         {true, State1} ->
@@ -216,7 +217,7 @@ handle_command({put, Bucket, Metric, {Time, Value}}, _Sender, State)
     {reply, ok, State1};
 
 handle_command({get, ReqID, Bucket, Metric, {Time, Count}}, Sender,
-               #state{tbl=T, io=IO, partition = Idx} = State) ->
+               #state{tbl=T, io=IO, node=N, partition=P} = State) ->
     BM = {Bucket, Metric},
     case ets:lookup(T, BM) of
         %% If our request is entirely cache we don't need to bother the IO node
@@ -228,7 +229,7 @@ handle_command({get, ReqID, Bucket, Metric, {Time, Count}}, Sender,
             SkipBytes = (Time - Start) * ?DATA_SIZE,
             Data = k6_bytea:get(Array, SkipBytes, (Count * ?DATA_SIZE)),
             {Resolution, State1} = get_resolution(Bucket, State),
-            {reply, {ok, ReqID, Idx, {Resolution, Data}}, State1};
+            {reply, {ok, ReqID, {P, N}, {Resolution, Data}}, State1};
         %% The request is neither before, after nor entirely inside the cache
         %% we sadly have to flush it.
         %% This are the conditions where we have to flush the cache and then
@@ -471,7 +472,7 @@ reply(Reply, {_, ReqID, _} = Sender, #state{node=N, partition=P}) ->
     riak_core_vnode:reply(Sender, {ok, ReqID, {P, N}, Reply}).
 
 %% The timestamp is primarily used by the vacuum to remove data in accordance
-%% with the bucket lifetime. The timestamp is only updated once per 
+%% with the bucket lifetime. The timestamp is only updated once per
 %% vacuum cycle, and may not accurately reflect the current system time.
 %% Although more performant than the monotonic `now()', there are nevertheless
 %% performance penalties for calling this too frequently. Also, updating the
