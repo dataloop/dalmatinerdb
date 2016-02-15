@@ -58,8 +58,8 @@
 %% the manual at http://bit.ly/1ciKRkS
 {mapping, "ring_size", "riak_core.ring_creation_size",
  [{datatype, integer},
-  {default, 64},
-  {commented, 64},
+  {default, {{ring_size}} },
+% {commented, 64},
   {validators, ["ring_size"]}
  ]}.
 
@@ -105,7 +105,7 @@
 %% @doc handoff.ip is the network address that Riak binds to for
 %% intra-cluster data handoff.
 {mapping, "handoff.ip", "riak_core.handoff_ip", [
-  {default, "127.0.0.1" },
+  {default, "{{handoff_ip}}"},
   {datatype, string},
   {validators, ["valid_ipaddr"]}
 ]}.

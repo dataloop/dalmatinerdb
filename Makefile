@@ -30,3 +30,6 @@ deb-prepare: update
 	$(REBAR) as deb compile
 	$(REBAR) as deb release
 	make -C rel/deb prepare
+
+dev1 dev2 dev3 dev4: all
+	$(REBAR) as $@ release
