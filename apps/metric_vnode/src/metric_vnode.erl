@@ -60,7 +60,6 @@ repair(IdxNode, {Bucket, Metric}, {Time, Obj}) ->
       ignore,
       ?MASTER).
 
-
 put(Preflist, ReqID, Bucket, Metric, {Time, Values}) when is_list(Values) ->
     put(Preflist, ReqID, Bucket, Metric,
         {Time, << <<?INT:?TYPE_SIZE, V:?BITS/?INT_TYPE>> || V <- Values >>});
@@ -132,8 +131,7 @@ repair_update_cache(Bucket, Metric, Time, Count, Value,
         %% write it!
         [{{Bucket, Metric}, Start, _Size, _Time, _Array}]
           when Time + Count < Start ->
-            metric_io:write(State#state.io, Bucket, Metric, Time,
-                            Value),
+            metric_write(State#state.io, Bucket, Metric, Time, Value),
             State;
         %% ┌─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┐
         %% │Cache│     │Start│ ... │St+Si│     │     │     │     │     │
@@ -148,8 +146,7 @@ repair_update_cache(Bucket, Metric, Time, Count, Value,
             Bin = k6_bytea:get(Array, 0, Size * ?DATA_SIZE),
             k6_bytea:delete(Array),
             ets:delete(T, {Bucket, Metric}),
-            metric_io:write(State#state.io, Bucket, Metric, Start,
-                            Bin),
+            metric_write(State#state.io, Bucket, Metric, Start, Bin),
             do_put(Bucket, Metric, Time, Value, State);
         %% ┌─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┐
         %% │Cache│     │     │     │Start│ ... │St+Si│     │     │     │
@@ -178,10 +175,8 @@ repair_update_cache(Bucket, Metric, Time, Count, Value,
             Bin = k6_bytea:get(Array, 0, Size * ?DATA_SIZE),
             k6_bytea:delete(Array),
             ets:delete(T, {Bucket, Metric}),
-            metric_io:write(State#state.io, Bucket, Metric, Start,
-                            Bin),
-            metric_io:write(State#state.io, Bucket, Metric, Time,
-                            Value),
+            metric_write(State#state.io, Bucket, Metric, Start, Bin),
+            metric_write(State#state.io, Bucket, Metric, Time, Value),
             State;
         %% If we had no privious cache we can safely cache the
         %% repair.
@@ -243,15 +238,13 @@ handle_command({get, ReqID, Bucket, Metric, {Time, Count}}, Sender,
             Bin = k6_bytea:get(Array, 0, Size * ?DATA_SIZE),
             k6_bytea:delete(Array),
             ets:delete(T, {Bucket, Metric}),
-            metric_io:write(IO, Bucket, Metric, Start, Bin),
-            metric_io:read(IO, Bucket, Metric, Time, Count, ReqID, Sender),
-            {noreply, State};
+            metric_write(IO, Bucket, Metric, Start, Bin),
+            metric_read(State, Bucket, Metric, Time, Count, ReqID, Sender);
         %% If we are here we know that there is either no cahce or the requested
         %% window and the cache do not overlap, so we can simply serve it from
         %% the ui servers
         _ ->
-            metric_io:read(IO, Bucket, Metric, Time, Count, ReqID, Sender),
-            {noreply, State}
+            metric_read(State, Bucket, Metric, Time, Count, ReqID, Sender)
     end.
 
 handle_handoff_command(?FOLD_REQ{foldfun=Fun, acc0=Acc0}, Sender,
@@ -259,7 +252,7 @@ handle_handoff_command(?FOLD_REQ{foldfun=Fun, acc0=Acc0}, Sender,
     ets:foldl(fun({{Bucket, Metric}, Start, Size, _, Array}, _) ->
                       Bin = k6_bytea:get(Array, 0, Size * ?DATA_SIZE),
                       k6_bytea:delete(Array),
-                      metric_io:write(IO, Bucket, Metric, Start, Bin)
+                      metric_write(IO, Bucket, Metric, Start, Bin)
               end, ok, T),
     ets:delete_all_objects(T),
     FinishFun =
@@ -351,7 +344,7 @@ handle_coverage({delete, Bucket}, _KeySpaces, _Sender,
                     when Bkt /= Bucket ->
                       Bin = k6_bytea:get(Array, 0, Size * ?DATA_SIZE),
                       k6_bytea:delete(Array),
-                      metric_io:write(IO, Bkt, Metric, Start, Bin);
+                      metric_write(IO, Bkt, Metric, Start, Bin);
                  ({_, _, _, _, Array}, _) ->
                       k6_bytea:delete(Array)
               end, ok, T),
@@ -399,7 +392,7 @@ terminate(_Reason, #state{tbl = T, io = IO}) ->
     ets:foldl(fun({{Bucket, Metric}, Start, Size, _, Array}, _) ->
                       Bin = k6_bytea:get(Array, 0, Size * ?DATA_SIZE),
                       k6_bytea:delete(Array),
-                      metric_io:write(IO, Bucket, Metric, Start, Bin)
+                      metric_write(IO, Bucket, Metric, Start, Bin)
               end, ok, T),
     ets:delete(T),
     metric_io:close(IO),
@@ -426,7 +419,7 @@ do_put(Bucket, Metric, Time, Value,
                 %% written data.
                 [{BM, _Start, _Size, _End, _V}]
                   when Time < _Start ->
-                    metric_io:write(IO, Bucket, Metric, Time, Value, Sync);
+                    metric_write(IO, Bucket, Metric, Time, Value, Sync);
                 %% When the Delta of start time and this package is greater
                 %% then the cache time we flush the cache and start a new cache
                 %% with a new package
@@ -438,7 +431,7 @@ do_put(Bucket, Metric, Time, Value,
                                  <<0:(?DATA_SIZE * 8 * (CT - Len))>>),
                     ets:update_element(T, BM, [{2, Time}, {3, Len},
                                                {4, Time + CT}]),
-                    metric_io:write(IO, Bucket, Metric, Start, Bin, Sync);
+                    metric_write(IO, Bucket, Metric, Start, Bin, Sync);
                 %% In the case the data is already longer then the cache we
                 %% flush the cache
                 [{BM, Start, Size, _End, Array}]
@@ -446,8 +439,8 @@ do_put(Bucket, Metric, Time, Value,
                     ets:delete(T, {Bucket, Metric}),
                     Bin = k6_bytea:get(Array, 0, Size * ?DATA_SIZE),
                     k6_bytea:delete(Array),
-                    metric_io:write(IO, Bucket, Metric, Start, Bin, Sync),
-                    metric_io:write(IO, Bucket, Metric, Time, Value, Sync);
+                    metric_write(IO, Bucket, Metric, Start, Bin, Sync),
+                    metric_write(IO, Bucket, Metric, Time, Value, Sync);
                 [{BM, Start, _Size, _End, Array}] ->
                     Idx = Time - Start,
                     k6_bytea:set(Array, Idx * ?DATA_SIZE, Value),
@@ -462,7 +455,7 @@ do_put(Bucket, Metric, Time, Value,
                 %% If we don't have a cache but our data is too big for the
                 %% cache we happiely write it directly
                 [] ->
-                    metric_io:write(IO, Bucket, Metric, Time, Value, Sync)
+                    metric_write(IO, Bucket, Metric, Time, Value, Sync)
             end,
             State1
     end.
@@ -492,6 +485,34 @@ valid_ts(TS, Bucket, State) ->
             {false, State1};
         {_, State1} ->
             {true, State1}
+    end.
+
+metric_write(Pid, Bucket, Metric, Time, Value) ->
+    metric_write(Pid, Bucket, Metric, Time, Value, ?MAX_Q_LEN).
+
+%% Returning `ok' in the case of errors amounts to silent consumption.
+%% However, writes are performed iteratively in some cases and there is
+%% no easy way to break out of a fold operation.
+metric_write(Pid, Bucket, Metric, Time, Value, MaxQueueLen) ->
+    case metric_io:write(Pid, Bucket, Metric, Time, Value, MaxQueueLen) of
+        ok ->
+            ok;
+        {error, Error} ->
+            lager:error("[metric_vnode] ~p error writing metric ~p",
+                        [Error, {Bucket, Metric, Time}]),
+            ok
+    end.
+
+metric_read(State=#state{io=Pid}, Bucket, Metric, Time, Count, ReqID, Sender) ->
+    case metric_io:read(Pid, Bucket, Metric, Time, Count, ReqID, Sender) of
+        ok ->
+            {noreply, State};
+        {ok, ReqID, Idx, Data} ->
+            {reply, {ok, ReqID, Idx, Data}, State};
+        {error, Error} ->
+            lager:error("[metric_vnode] ~p error reading metric ~p",
+                        [Error, {Bucket, Metric, Time, Count}]),
+            {reply, {error, Error}, State}
     end.
 
 %% Return the latest point we'd ever want to save. This is more strict

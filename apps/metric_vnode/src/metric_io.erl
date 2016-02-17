@@ -85,7 +85,7 @@ sync_call(Thunk) ->
     try
         Thunk()
     catch
-        exit:{timeout,_} -> {error, timeout}
+        exit:{timeout, _} -> {error, timeout}
     end.
 
 buckets(Pid) ->
