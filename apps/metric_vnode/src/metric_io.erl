@@ -50,18 +50,43 @@ write(Pid, Bucket, Metric, Time, Value) ->
     write(Pid, Bucket, Metric, Time, Value, ?MAX_Q_LEN).
 
 write(Pid, Bucket, Metric, Time, Value, MaxLen) ->
-    case erlang:process_info(Pid, message_queue_len) of
-        {message_queue_len, N} when N > MaxLen ->
+    {message_queue_len, Len} = erlang:process_info(Pid, message_queue_len),
+    folsom_metrics:notify({io_queue_length, Len}),
+    case Len of
+        N when N > MaxLen ->
             swrite(Pid, Bucket, Metric, Time, Value);
         _ ->
             gen_server:cast(Pid, {write, Bucket, Metric, Time, Value})
     end.
 
 swrite(Pid, Bucket, Metric, Time, Value) ->
-    gen_server:call(Pid, {write, Bucket, Metric, Time, Value}).
+    sync_call(fun() -> gen_server:call(Pid, {write, Bucket, Metric, Time,
+                                             Value}) end).
 
 read(Pid, Bucket, Metric, Time, Count, ReqID, Sender) ->
-    gen_server:cast(Pid, {read, Bucket, Metric, Time, Count, ReqID, Sender}).
+    case erlang:process_info(Pid, message_queue_len) of
+        {message_queue_len, N} when N > ?MAX_Q_LEN ->
+            sread(Pid, Bucket, Metric, Time, Count, ReqID);
+        _ ->
+            gen_server:cast(Pid, {read, Bucket, Metric, Time, Count, ReqID,
+                                  Sender})
+    end.
+
+sread(Pid, Bucket, Metric, Time, Count, ReqID) ->
+    sync_call(fun() -> gen_server:call(Pid, {read, Bucket, Metric, Time, Count,
+                                             ReqID}) end).
+
+%% Wraps a synchronous `gen_server:call' operation in a try-catch, guarding for
+%% timeouts.
+%% The cost of letting the server process crash in the event of a timeout is
+%% significantly high for large partitions.  The entire mstore would need to
+%% be garbage collected and reconstructed.
+sync_call(Thunk) ->
+    try
+        Thunk()
+    catch
+        exit:{timeout, _} -> {error, timeout}
+    end.
 
 buckets(Pid) ->
     gen_server:call(Pid, buckets).
@@ -365,6 +390,11 @@ handle_call({write, Bucket, Metric, Time, Value}, _From, State) ->
     State1 = do_write(Bucket, Metric, Time, Value, State),
     {reply, ok, State1};
 
+handle_call({read, Bucket, Metric, Time, Count, ReqID, _Sender}, _From,
+            State = #state{node = N, partition = P}) ->
+    {Data, State1} = do_read(Bucket, Metric, Time, Count, State),
+    {reply, {ok, ReqID, {P, N}, Data}, State1};
+
 handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
@@ -385,17 +415,8 @@ handle_cast({write, Bucket, Metric, Time, Value}, State) ->
 
 handle_cast({read, Bucket, Metric, Time, Count, ReqID, Sender},
             State = #state{node = N, partition = P}) ->
-    {D, State1} =
-        case get_set(Bucket, State) of
-            {ok, {{Resolution, MSet}, S2}} ->
-                {ok, Data} = mstore:get(MSet, Metric, Time, Count),
-                {{Resolution, Data}, S2};
-            _ ->
-                lager:warning("[IO] Unknown metric: ~p/~p", [Bucket, Metric]),
-                Resolution = get_resolution(Bucket),
-                {{Resolution, mmath_bin:empty(Count)}, State}
-        end,
-    riak_core_vnode:reply(Sender, {ok, ReqID, {P, N}, D}),
+    {Data, State1} = do_read(Bucket, Metric, Time, Count, State),
+    riak_core_vnode:reply(Sender, {ok, ReqID, {P, N}, Data}),
     {noreply, State1};
 
 handle_cast(_Msg, State) ->
@@ -534,6 +555,17 @@ do_write(Bucket, Metric, Time, Value, State) ->
     MSet1 = mstore:put(MSet, Metric, Time, Value),
     Store1 = gb_trees:update(Bucket, {R, MSet1}, State1#state.mstore),
     State1#state{mstore=Store1}.
+
+do_read(Bucket, Metric, Time, Count, State) ->
+    case get_set(Bucket, State) of
+        {ok, {{Resolution, MSet}, S2}} ->
+            {ok, Data} = mstore:get(MSet, Metric, Time, Count),
+            {{Resolution, Data}, S2};
+        _ ->
+            lager:warning("[IO] Unknown metric: ~p/~p", [Bucket, Metric]),
+            Resolution = get_resolution(Bucket),
+            {{Resolution, mmath_bin:empty(Count)}, State}
+    end.
 
 get_resolution(Bucket) ->
     dalmatiner_opt:get(

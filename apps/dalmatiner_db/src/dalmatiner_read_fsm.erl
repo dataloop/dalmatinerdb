@@ -4,7 +4,7 @@
 -module(dalmatiner_read_fsm).
 -behavior(gen_fsm).
 
--define(DEFAULT_TIMEOUT, 5000).
+-define(DEFAULT_TIMEOUT, 60000).
 
 %% API
 -export([start_link/6, start/2, start/3, start/4]).
@@ -19,6 +19,9 @@
 %% States
 -export([prepare/2, execute/2, waiting/2, wait_for_n/2, finalize/2]).
 
+-type partition() :: chash:index_as_int().
+-type reply_src() :: {partition(), node()}.
+
 -record(state, {req_id,
                 from,
                 entity,
@@ -29,10 +32,12 @@
                 num_r=0,
                 size,
                 timeout=?DEFAULT_TIMEOUT,
+                tref,
                 val,
                 vnode,
                 system,
-                replies=[]}).
+                timing=[],
+                replies=[] :: [reply_src()]}).
 
 -ignore_xref([
               code_change/4,
@@ -109,25 +114,28 @@ init([ReqId, {VNode, System}, Op, From, Entity, Val]) ->
                 val=Val,
                 vnode=VNode,
                 system=System,
-                entity=Entity},
+                entity=Entity,
+                timing=fsm_timing:add_timing(prepare, [])},
     {ok, prepare, SD, 0}.
 
 %% @doc Calculate the Preflist.
-prepare(timeout, SD0=#state{entity={B, M},
+prepare(timeout, SD=#state{entity={B, M},
                             system=System,
                             n=N}) ->
 
     DocIdx = riak_core_util:chash_key({B, M}),
     Prelist = riak_core_apl:get_apl(DocIdx, N, System),
-    SD = SD0#state{preflist=Prelist},
-    {next_state, execute, SD, 0}.
+    SD1 = SD#state{preflist=Prelist},
+    new_state_timeout(execute, SD1).
 
 %% @doc Execute the get reqs.
-execute(timeout, SD0=#state{req_id=ReqId,
+execute(timeout, SD=#state{req_id=ReqId,
                             entity=Entity,
                             op=Op,
                             val=Val,
+                            timeout=Timeout,
                             preflist=Prelist}) ->
+    TRef = schedule_timeout(Timeout),
     case Entity of
         undefined ->
             metric_vnode:Op(Prelist, ReqId);
@@ -136,22 +144,23 @@ execute(timeout, SD0=#state{req_id=ReqId,
                 undefined ->
                     metric_vnode:Op(Prelist, ReqId, {Bucket, Metric});
                 _ ->
-
                     metric_vnode:Op(Prelist, ReqId, {Bucket, Metric}, Val)
             end
     end,
-    {next_state, waiting, SD0}.
+    SD1 = SD#state{tref = TRef},
+    new_state(waiting, SD1).
 
 %% @doc Wait for R replies and then respond to From (original client
 %% that called `get/2').
+%% `IdxNode' is a 2-tuple, {Partition, Node}, referring to the origin of this
+%% reply
 %% TODO: read repair...or another blog post?
-
 waiting({ok, ReqID, IdxNode, Obj},
-        SD0=#state{from=From, num_r=NumR0, replies=Replies0,
-                   r=R, n=N, timeout=Timeout}) ->
+        SD=#state{from=From, num_r=NumR0, replies=Replies0,
+                   r=R, n=N}) ->
     NumR = NumR0 + 1,
     Replies = [{IdxNode, Obj}|Replies0],
-    SD = SD0#state{num_r=NumR, replies=Replies},
+    SD1 = SD#state{num_r=NumR, replies=Replies},
     case NumR of
         Min when Min >= R ->
             case merge(Replies) of
@@ -162,28 +171,31 @@ waiting({ok, ReqID, IdxNode, Obj},
             end,
             case NumR of
                 N ->
-                    {next_state, finalize, SD, 0};
+                    new_state_timeout(finalize, SD1);
                 _ ->
-                    {next_state, wait_for_n, SD, Timeout}
+                    new_state(wait_for_n, SD1)
             end;
         _ ->
-            {next_state, waiting, SD}
-    end.
+            new_state(waiting, SD1)
+    end;
+waiting(request_timeout, SD) ->
+    lager:info("[fsm] request_timeout while waiting for R replies"),
+    {stop, normal, SD}.
 
 wait_for_n({ok, _ReqID, IdxNode, Obj},
            SD0=#state{n=N, num_r=NumR, replies=Replies0}) when NumR == N - 1 ->
     Replies = [{IdxNode, Obj}|Replies0],
-    {next_state, finalize, SD0#state{num_r=N, replies=Replies}, 0};
-
+    SD = SD0#state{num_r=N, replies=Replies},
+    new_state_timeout(finalize, SD);
 wait_for_n({ok, _ReqID, IdxNode, Obj},
-           SD0=#state{num_r=NumR0, replies=Replies0, timeout=Timeout}) ->
+           SD0=#state{num_r=NumR0, replies=Replies0}) ->
     NumR = NumR0 + 1,
     Replies = [{IdxNode, Obj}|Replies0],
-    {next_state, wait_for_n, SD0#state{num_r=NumR, replies=Replies}, Timeout};
-
-%% TODO partial repair?
-wait_for_n(timeout, SD) ->
-    {stop, timeout, SD}.
+    SD = SD0#state{num_r=NumR, replies=Replies},
+    new_state(wait_for_n, SD);
+wait_for_n(request_timeout, SD) ->
+    lager:info("[fsm] request_timeout while waiting for N replies"),
+    {stop, normal, SD}.
 
 finalize(timeout, SD=#state{
                         val = {Time, _},
@@ -209,7 +221,8 @@ handle_sync_event(_Event, _From, _StateName, StateData) ->
 
 code_change(_OldVsn, StateName, State, _Extra) -> {ok, StateName, State}.
 
-terminate(_Reason, _SN, _SD) ->
+terminate(_Reason, _SN, SD) ->
+    lager:info("[fsm] Timings: ~p", [SD#state.timing]),
     ok.
 
 %%%===================================================================
@@ -280,3 +293,19 @@ unique(L) ->
 
 mk_reqid() ->
     erlang:unique_integer().
+
+%% Ensure the FSM reaches a final state before the given `Timeout' value.
+schedule_timeout(infinity) ->
+    undefined;
+schedule_timeout(Timeout) ->
+    erlang:send_after(Timeout, self(), request_timeout).
+
+%% Move to the new state, marking the time it started
+new_state(StateName, State) ->
+    {next_state, StateName, add_timing(StateName, State)}.
+new_state_timeout(StateName, State) ->
+    {next_state, StateName, add_timing(StateName, State), 0}.
+
+%% Add timing information to the state
+add_timing(StateInfo, State = #state{timing = Timing}) ->
+    State#state{timing = fsm_timing:add_timing(StateInfo, Timing)}.
