@@ -259,7 +259,7 @@ bucket_fold_fun({BucketDir, Bucket}, {AccIn, Fun}) ->
             {Fun({Bucket, Metric}, lists:reverse(AccL), HAcc), Fun}
     end.
 
-fold_byckets_fun(PartitionDir, Buckets, Fun, Acc0) ->
+fold_buckets_fun(PartitionDir, Buckets, Fun, Acc0) ->
     Buckets1 = [{[PartitionDir, $/, BucketS], list_to_binary(BucketS)}
                 || BucketS <- Buckets],
     fun() ->
@@ -274,7 +274,7 @@ handle_call({fold, Fun, Acc0}, _From,
     PartitionDir = [DataDir, $/,  integer_to_list(Partition)],
     case file:list_dir(PartitionDir) of
         {ok, Buckets} ->
-            AsyncWork = fold_byckets_fun(PartitionDir, Buckets, Fun, Acc0),
+            AsyncWork = fold_buckets_fun(PartitionDir, Buckets, Fun, Acc0),
             {reply, {ok, AsyncWork}, State};
         _ ->
             {reply, empty, State}
@@ -393,6 +393,7 @@ handle_cast({write, Bucket, Metric, Time, Value}, State) ->
 handle_cast({read, Bucket, Metric, Time, Count, ReqID, Sender},
             State = #state{node = N, partition = P}) ->
     {D, State1} = do_read(Bucket, Metric, Time, Count, State),
+    lager:info("[IO] Reply to get request: ~p from: ~p ~p~n", [ReqID, N, P]),
     riak_core_vnode:reply(Sender, {ok, ReqID, {P, N}, D}),
     {noreply, State1};
 
@@ -415,6 +416,7 @@ handle_cast({read_rest, Bucket, Metric, Time, Count, Part, ReqID, Sender},
                                  (Offset + Len - Count) * ?DATA_SIZE),
                 {{Res, <<D1/binary, Bin/binary, D2/binary>>}, S}
         end,
+    lager:info("[IO] Reply to get request: ~p from: ~p ~p~n", [ReqID, N, P]),
     riak_core_vnode:reply(Sender, {ok, ReqID, {P, N}, Data}),
     {noreply, State1};
 
