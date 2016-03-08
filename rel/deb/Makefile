@@ -23,9 +23,9 @@ stage/etc/init/ddb.conf: upstart.conf
 prepare:
 	mkdir -p stage/etc
 	mkdir -p stage/usr/bin
-	mkdir -p stage/usr/lib/ddb
+	mkdir -p stage/usr/lib/ddb/lib
 	mkdir -p stage/usr/share/ddb
-	mkdir -p stage/var/lib/ddb/lib
+	mkdir -p stage/var/lib/ddb
 	mkdir -p stage/var/log/ddb
 	cp -r ../../_build/deb/rel/ddb/bin stage/usr/lib/ddb/
 	cp -r ../../_build/deb/rel/ddb/etc stage/etc/ddb
