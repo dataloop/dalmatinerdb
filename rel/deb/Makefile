@@ -30,7 +30,7 @@ prepare:
 	cp -r ../../_build/deb/rel/ddb/bin stage/usr/lib/ddb/
 	cp -r ../../_build/deb/rel/ddb/etc stage/etc/ddb
 	cp -r ../../_build/deb/rel/ddb/erts-* stage/usr/lib/ddb/
-	cp -r ../../_build/deb/rel/ddb/lib stage/usr/lib/ddb/
+	tar -cC ../../_build/deb/rel/ddb/lib --exclude c_src --exclude src . | tar -xC stage/usr/lib/ddb/lib
 	cp -r ../../_build/deb/rel/ddb/releases stage/usr/lib/ddb/
 	cp -r ../../_build/deb/rel/ddb/share stage/usr/lib/ddb/
 
