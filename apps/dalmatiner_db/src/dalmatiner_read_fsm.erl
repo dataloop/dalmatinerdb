@@ -21,6 +21,8 @@
 
 -type partition() :: chash:index_as_int().
 -type reply_src() :: {partition(), term()}.
+-type metric_element() :: {non_neg_integer(), binary()}.
+%%-type metric_reply() :: {partition(), metric_element()}.
 
 -record(state, {req_id,
                 from,
@@ -36,6 +38,7 @@
                 vnode,
                 system,
                 replies=[] :: [reply_src()]}).
+-type state() :: #state{}.
 
 -ignore_xref([
               code_change/4,
@@ -95,6 +98,9 @@ start(VNodeInfo, Op, User, Val) ->
 %%%===================================================================
 
 %% Intiailize state data.
+-spec init([any()]) ->
+                  {ok, prepare, state(), 0}.
+
 init([ReqId, {VNode, System}, Op, From]) ->
     init([ReqId, {VNode, System}, Op, From, undefined, undefined]);
 
@@ -147,7 +153,6 @@ execute(timeout, SD0=#state{req_id=ReqId,
                 undefined ->
                     event_vnode:Op(Prelist, ReqId, Bucket);
                 _ ->
-
                     event_vnode:Op(Prelist, ReqId, Bucket, Val)
             end
     end,
@@ -209,7 +214,7 @@ finalize(timeout, SD=#state{
                         val = {Time, _},
                         replies=Replies,
                         entity=Entity}) ->
-    MObj = merge(SD, Replies),
+    MObj = merge_metrics(Replies),
     case needs_repair(MObj, Replies) of
         true ->
             repair(Time, Entity, MObj, Replies),
@@ -235,7 +240,7 @@ terminate(_Reason, _SN, _SD) ->
 %%%===================================================================
 %%% Internal Functions
 %%%===================================================================
-
+-spec merge(state(), [E]) -> E.
 merge(#state{system = event}, Events) ->
     merge_events(Events);
 merge(#state{system = metric}, Metrics) ->
@@ -274,6 +279,8 @@ repair_events(Bucket, Merged, [{IdxNode, Es} | R]) ->
 %% @pure
 %%
 %% @doc Given a list of `Replies' return the merged value.
+
+-spec merge_metrics([reply_src()]) -> metric_element() | not_found.
 merge_metrics(Replies) ->
     case [Data || {_, {_, Data}} <- Replies, is_binary(Data)] of
         [] ->
@@ -290,11 +297,25 @@ merge_([DH | DT], [R | _] = Ress) ->
                         [R, Ress]),
             not_found;
         false ->
-            Res = lists:foldl(fun mmath_bin:merge/2, DH, DT),
+            Res = lists:foldl(fun merge_compressed/2, decompress(DH), DT),
             {R, Res}
     end.
 
+-dialyzer({nowarn_function, merge_compressed/2}).
+merge_compressed(Acc, New) ->
+    mmath_bin:merge(Acc, decompress(New)).
 
+%% Snappy :(
+-dialyzer({nowarn_function, decompress/1}).
+-spec decompress(binary()) -> binary().
+decompress(D) ->
+    case snappy:is_valid(D) of
+        true ->
+            {ok, Res} = snappy:decompress(D),
+            Res;
+        _ ->
+            D
+    end.
 %% @pure
 %%
 %% @doc Reconcile conflicts among conflicting values.
@@ -317,14 +338,19 @@ different(A) -> fun(B) -> A =/= B end.
 %% @impure
 %%
 %% @doc Repair any vnodes that do not have the correct object.
-repair(_, _, _, []) -> ok;
 
-repair(Time, {Bkt, {Met, _}} = MetAndTime, MObj, [{IdxNode, Obj}|T]) ->
+%% I giveup :/
+-dialyzer({nowarn_function, repair/4}).
+
+repair(_, _, _, []) -> ok;
+repair(_, _, not_found, _) -> ok;
+repair(_, _, Events, _) when is_list(Events) -> ok;
+repair(Time, {Bkt, {Met, _}} = MetAndTime, {_, Data} = MObj, [{IdxNode, Obj}|T])
+  when not is_list(Obj)->
     case MObj == Obj of
         true ->
             repair(Time, MetAndTime, MObj, T);
         false ->
-            {_, Data} = MObj,
             metric_vnode:repair(IdxNode, {Bkt, Met}, {Time, Data}),
             repair(Time, MetAndTime, MObj, T)
     end.

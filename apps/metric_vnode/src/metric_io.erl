@@ -13,7 +13,7 @@
 -include_lib("mmath/include/mmath.hrl").
 
 %% API
--export([start_link/1, count/1,
+-export([start_link/1, count/1, get_bitmap/6,
          empty/1, fold/3, delete/1, delete/2, delete/3, close/1,
          buckets/1, metrics/2, metrics/3,
          read/7, read_rest/8, write/5, write/6]).
@@ -70,6 +70,9 @@ write(Pid, Bucket, Metric, Time, Value, MaxLen) ->
 swrite(Pid, Bucket, Metric, Time, Value) ->
     Req = {write, Bucket, Metric, Time, Value},
     io_call(Pid, Req).
+
+get_bitmap(Pid, Bucket, Metric, Time, Ref, Sender) ->
+    gen_server:cast(Pid, {get_bitmap, Bucket, Metric, Time, Ref, Sender}).
 
 read(Pid, Bucket, Metric, Time, Count, ReqID, Sender) ->
     gen_server:cast(Pid, {read, Bucket, Metric, Time, Count, ReqID, Sender}).
@@ -142,8 +145,7 @@ init([Partition]) ->
                    _ ->
                        10*1024
                end,
-    PartitionDir = [DataDir, $/,  integer_to_list(Partition)],
-
+    PartitionDir = filename:join([DataDir,  integer_to_list(Partition)]),
     {ok, #state{ partition = Partition,
                  node = node(),
                  dir = PartitionDir,
@@ -274,7 +276,8 @@ bucket_fold_fun({BucketDir, Bucket}, {AccIn, Fun}) ->
     end.
 
 fold_buckets_fun(PartitionDir, Buckets, Fun, Acc0) ->
-    Buckets1 = [{[PartitionDir, $/, BucketS], list_to_binary(BucketS)}
+    Buckets1 = [{filename:join([PartitionDir, BucketS]),
+                 list_to_binary(BucketS)}
                 || BucketS <- Buckets],
     fun() ->
             {Out, _} = lists:foldl(fun bucket_fold_fun/2, {Acc0, Fun},
@@ -285,7 +288,8 @@ fold_buckets_fun(PartitionDir, Buckets, Fun, Acc0) ->
 handle_call(count, _From, State = #state{dir = PartitionDir}) ->
     case file:list_dir(PartitionDir) of
         {ok, Buckets} ->
-            Buckets1 = [[PartitionDir, $/, BucketS] || BucketS <- Buckets],
+            Buckets1 = [filename:join([PartitionDir, BucketS])
+                        || BucketS <- Buckets],
             Count = lists:foldl(fun(Bucket, Acc) ->
                                    Acc + mstore:count(Bucket)
                                    end, 0, Buckets1),
@@ -315,26 +319,26 @@ handle_call(delete, _From, State = #state{dir = PartitionDir}) ->
                          lager:warning("[metric] deleting bucket: ~s.",
                                        [Bucket]),
                          mstore:delete(MSet),
-                         file:del_dir([PartitionDir, $/, Bucket])
+                         file:del_dir(filename:join([PartitionDir, Bucket]))
                  end, State#state.mstores),
     gb_trees:map(fun(Bucket, {_, _, MSet}) ->
                          lager:warning("[metric] deleting bucket: ~s.",
                                        [Bucket]),
                          mstore:delete(MSet),
-                         file:del_dir([PartitionDir, $/, Bucket])
+                         file:del_dir(filename:join([PartitionDir, Bucket]))
                  end, State#state.closed_mstores),
     case list_buckets(State) of
         {ok, Buckets} ->
-            [case mstore:open([PartitionDir, $/, B]) of
+            [case mstore:open(filename:join([PartitionDir, B])) of
                  {ok, Store}  ->
                      lager:warning("[metric] deleting bucket: ~s.",
                                    [B]),
                      mstore:delete(Store),
-                     file:del_dir([PartitionDir, $/, B]);
+                     file:del_dir(filename:join([PartitionDir, B]));
                  {error, enoent} ->
                      lager:warning("[metric] deleting (empty) bucket: ~s.",
                                    [B]),
-                     file:del_dir([PartitionDir, $/, B])
+                     file:del_dir(filename:join([PartitionDir, B]))
              end || B <- Buckets];
         _ ->
             ok
@@ -355,7 +359,7 @@ handle_call({delete, Bucket}, _From,
     {R, State1} = case get_set(Bucket, State) of
                       {ok, {{_, _, MSet}, S1}} ->
                           mstore:delete(MSet),
-                          file:del_dir([Dir, $/, Bucket]),
+                          file:del_dir(filename:join([Dir, Bucket])),
                           MStore = gb_trees:delete(Bucket, S1#state.mstores),
                           CMStore = gb_trees:delete(
                                        Bucket, S1#state.closed_mstores),
@@ -430,15 +434,20 @@ handle_cast({write, Bucket, Metric, Time, Value}, State) ->
     State1 = do_write(Bucket, Metric, Time, Value, State),
     {noreply, State1};
 
+handle_cast({get_bitmap, Bucket, Metric, Time, Ref, Sender}, State) ->
+    {D, State1} = do_read_bitmap(Bucket, Metric, Time, State),
+    Sender ! {reply, Ref, D},
+    {noreply, State1};
 handle_cast({read, Bucket, Metric, Time, Count, ReqID, Sender},
             State = #state{node = N, partition = P}) ->
-    {D, State1} = do_read(Bucket, Metric, Time, Count, State),
-    riak_core_vnode:reply(Sender, {ok, ReqID, {P, N}, D}),
+    {{Res, D}, State1} = do_read(Bucket, Metric, Time, Count, State),
+    {ok, Dc} = snappy:compress(D),
+    riak_core_vnode:reply(Sender, {ok, ReqID, {P, N}, {Res, Dc}}),
     {noreply, State1};
 
 handle_cast({read_rest, Bucket, Metric, Time, Count, Part, ReqID, Sender},
             State = #state{node = N, partition = P}) ->
-    {Data, State1} =
+    {{ResR, Data}, State1} =
         case Part of
             {Offset, Len, Bin} when Offset =:= 0 ->
                 {{Res, D}, S} =
@@ -455,7 +464,8 @@ handle_cast({read_rest, Bucket, Metric, Time, Count, Part, ReqID, Sender},
                                  (Offset + Len - Count) * ?DATA_SIZE),
                 {{Res, <<D1/binary, Bin/binary, D2/binary>>}, S}
         end,
-    riak_core_vnode:reply(Sender, {ok, ReqID, {P, N}, Data}),
+    {ok, Dc} = snappy:compress(Data),
+    riak_core_vnode:reply(Sender, {ok, ReqID, {P, N}, {ResR, Dc}}),
     {noreply, State1};
 
 handle_cast(_Msg, State) ->
@@ -516,8 +526,8 @@ code_change(_OldVsn, State, _Extra) ->
 
 bucket_dir(Bucket, Partition) ->
     DataDir = application:get_env(riak_core, platform_data_dir, "data"),
-    PartitionDir = DataDir ++ [$/, integer_to_list(Partition)],
-    BucketDir = PartitionDir ++ [$/, binary_to_list(Bucket)],
+    PartitionDir = filename:join([DataDir, integer_to_list(Partition)]),
+    BucketDir = filename:join([PartitionDir, binary_to_list(Bucket)]),
     file:make_dir(PartitionDir),
     file:make_dir(BucketDir),
     BucketDir.
@@ -579,8 +589,8 @@ bucket_exists(Partition, Bucket) ->
                   _ ->
                       "data"
               end,
-    PartitionDir = [DataDir | [$/ |  integer_to_list(Partition)]],
-    BucketDir = [PartitionDir, [$/ | binary_to_list(Bucket)]],
+    PartitionDir = filename:join([DataDir, integer_to_list(Partition)]),
+    BucketDir = filename:join([PartitionDir, binary_to_list(Bucket)]),
     filelib:is_dir(BucketDir).
 
 
@@ -604,6 +614,15 @@ do_write(Bucket, Metric, Time, Value, State) ->
                             State1#state.mstores),
     State1#state{mstores = Store1}.
 
+do_read_bitmap(Bucket, Metric, Time, State) ->
+    case get_set(Bucket, State) of
+        {ok, {{_LastWritten, _Resolution, MSet}, S2}} ->
+            R = mstore:bitmap(MSet, Metric, Time),
+            {R, S2};
+        _ ->
+            lager:warning("[IO] Unknown metric: ~p/~p", [Bucket, Metric]),
+            {{error, not_found}, State}
+    end.
 -spec do_read(binary(), binary(), non_neg_integer(), pos_integer(), state()) ->
                       {{pos_integer(), bitstring()}, state()}.
 do_read(Bucket, Metric, Time, Count, State = #state{})
